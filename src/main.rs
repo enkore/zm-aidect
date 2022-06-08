@@ -3,6 +3,8 @@ use memmap2::MmapRaw;
 use std::fs::OpenOptions;
 use std::io;
 use std::mem::size_of;
+use std::thread::sleep;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
@@ -110,7 +112,7 @@ impl Monitor {
             let trigger_data = trigger_data as *const MonitorTriggerData;
             let videostore_data = videostore_data as *const MonitorVideoStoreData;
             let shared_timestamps = shared_timestamps as *const timeval;
-            let shared_images = shared_images as *const u8;
+            let shared_images = shared_images.align_offset(64) as *const u8;
 
             assert_eq!((*shared_data).size, size_of::<MonitorSharedData>() as u32);
             assert_eq!((*trigger_data).size, size_of::<MonitorTriggerData>() as u32);
@@ -129,8 +131,14 @@ impl Monitor {
         Ok(monitor)
     }
 
-    fn valid(self) -> bool {
+    fn valid(&self) -> bool {
+        // should use self.read_volatile().valid or have entirely separate read() method which gives a pubstruct
         unsafe { (*self.shared_data).valid > 0 }
+    }
+
+    fn last_write_time(&self) -> SystemTime {
+        let value = unsafe { (*self.shared_data).last_write_time };
+        UNIX_EPOCH + Duration::from_secs(value as u64)
     }
 }
 
@@ -139,5 +147,10 @@ fn main() -> io::Result<()> {
 
     let monitor = Monitor::connect(mid)?;
     println!("Monitor shm valid: {}", monitor.valid());
+
+    loop {
+        println!("Last write time: {:?}", monitor.last_write_time());
+        sleep(Duration::from_millis(500));
+    }
     Ok(())
 }
