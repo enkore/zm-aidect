@@ -94,14 +94,13 @@ impl Monitor {
     fn connect(monitor_id: u32) -> io::Result<Monitor> {
         let mmap_path = format!("/dev/shm/zm.mmap.{}", monitor_id);
         let file = OpenOptions::new().read(true).write(true).open(&mmap_path)?;
-
-        let mmap = unsafe { MmapRaw::map_raw(&file)? };
+        let mmap = MmapRaw::map_raw(&file)?;
 
         let shared_data = mmap.as_ptr(); // as *const MonitorSharedData;
 
-        let image_buffer_count = 20;
+        let image_buffer_count = 3;  // needs to be retrieved from the database
 
-        unsafe {
+        let monitor = unsafe {
             let trigger_data = shared_data.add(size_of::<MonitorSharedData>());
             let videostore_data = trigger_data.add(size_of::<MonitorTriggerData>());
             let shared_timestamps = videostore_data.add(size_of::<MonitorVideoStoreData>());
@@ -113,18 +112,32 @@ impl Monitor {
             let shared_timestamps = shared_timestamps as *const timeval;
             let shared_images = shared_images as *const u8;
 
-            Ok(Monitor {
+            assert_eq!((*shared_data).size, size_of::<MonitorSharedData>() as u32);
+            assert_eq!((*trigger_data).size, size_of::<MonitorTriggerData>() as u32);
+            assert_eq!((*videostore_data).size, size_of::<MonitorVideoStoreData>() as u32);
+
+            Monitor {
                 mmap,
                 shared_data,
                 trigger_data,
                 videostore_data,
                 shared_timestamps,
                 shared_images,
-            })
-        }
+            }
+        };
+
+        Ok(monitor)
+    }
+
+    fn valid(self) -> bool {
+        unsafe { (*self.shared_data).valid > 0 }
     }
 }
 
-fn main() {
+fn main() -> io::Result<()> {
     let mid = 5;
+
+    let monitor = Monitor::connect(mid)?;
+    println!("Monitor shm valid: {}", monitor.valid());
+    Ok(())
 }
