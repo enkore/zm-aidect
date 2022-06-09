@@ -118,7 +118,7 @@ impl Monitor {
     fn connect(monitor_id: u32) -> io::Result<Monitor> {
         let mmap_path = format!("/dev/shm/zm.mmap.{}", monitor_id);
         let file = OpenOptions::new().read(true).write(true).open(&mmap_path)?;
-        let mmap = MmapRaw::map_raw(&file)?;
+        let mmap = MmapRaw::map_raw(&file)?;  // we don't actually have to mmap this at all. we can just pread from the file. its just a file, bro.
 
         let shared_data = mmap.as_ptr(); // as *const MonitorSharedData;
 
@@ -192,6 +192,8 @@ fn main() -> io::Result<()> {
 
             let image_data = unsafe { slice::from_raw_parts(monitor.shared_images, image_size as usize) };
             let image_data = image_data.to_vec();
+
+            std::fs::write("/tmp/imago", image_data)?;
         }
     }
     Ok(())
