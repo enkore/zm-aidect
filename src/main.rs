@@ -182,34 +182,38 @@ fn main() -> TractResult<()> {
 
     let model = tract_onnx::onnx()
         // load the model
-        .model_for_path("mobilenetv2-7.onnx")?
+        .model_for_path("tiny-yolov3-11/yolov3-tiny.onnx")?
         // specify input type and shape
-        .with_input_fact(0, f32::fact(&[1, 3, 224, 224]).into())?
+        .with_input_fact(0, f32::fact(&[1, 3, 416, 416]).into())?
+        .with_input_fact(1, f32::fact(&[1, 2]).into())?
         // optimize the model
         .into_optimized()?
         // make the model runnable and fix its inputs and outputs
         .into_runnable()?;
 
-    let image = image::open("imago.png").unwrap().to_rgb8();
+    let image = image::open("imago416.png").unwrap().to_rgb8();
     //let image = std::fs::read("imago")?;  // 1280x720 x4 (RGBA)
 
-    let resized = image::imageops::resize(&image, 224, 224,::image::imageops::FilterType::Triangle);
+    //let resized = image::imageops::resize(&image, 224, 224,::image::imageops::FilterType::Triangle);
+    let resized = image;
 
-    let image: Tensor = tract_ndarray::Array4::from_shape_fn((1, 3, 224, 224), |(_, c, y, x)| {
+    let image: Tensor = tract_ndarray::Array4::from_shape_fn((1, 3, 416, 416), |(_, c, y, x)| {
         let mean = [0.485, 0.456, 0.406][c];
         let std = [0.229, 0.224, 0.225][c];
         (resized[(x as _, y as _)][c] as f32 / 255.0 - mean) / std
     }).into();
 
-    let result = model.run(tvec!(image)).unwrap();
+    let image_size: Tensor = tract_ndarray::Array2::from_shape_vec((1, 2),vec![1280, 720])?.into();
 
-    let best = result[0]
+    let result = model.run(tvec!(image, image_size)).unwrap();
+
+    /*let best = result[0]
         .to_array_view::<f32>()?
         .iter()
         .cloned()
         .zip(2..)
         .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-    println!("result: {:?}", best);
+    println!("result: {:?}", best);*/
 
 
     /*let monitor = Monitor::connect(mid)?;
