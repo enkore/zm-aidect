@@ -104,6 +104,14 @@ struct MonitorVideoStoreData {
 
 const _: [u8; 4128] = [0; size_of::<MonitorVideoStoreData>()];
 
+#[repr(C)]
+struct MonitorMmapLayout {
+    shared_data: MonitorSharedData,
+    trigger_data: MonitorTriggerData,
+    videostore_data: MonitorVideoStoreData,
+    // ...
+}
+
 struct Monitor {
     mmap: MmapRaw,
 
