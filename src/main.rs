@@ -2,10 +2,14 @@ use libc::{c_char, c_double, time_t, timeval};
 use memmap2::MmapRaw;
 use std::fs::OpenOptions;
 use std::{io, slice};
+use std::error::Error;
 use std::mem::size_of;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tract_onnx::prelude::TractResult;
+use opencv::core::{CV_8U, Mat, Scalar};
+use opencv::dnn::{blob_from_image, LayerTraitConst, NetTrait, NetTraitConst, read_net};
+use opencv::imgcodecs::IMREAD_UNCHANGED;
+use opencv::types::VectorOfMat;
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
@@ -175,43 +179,71 @@ impl Monitor {
     }
 }
 
-fn main() -> TractResult<()> {
+fn main() -> Result<(), Box<dyn Error>> {
     let mid = 5;
 
-    use tract_onnx::prelude::*;
+    let mut net = read_net("yolov4-tiny.weights", "yolov4-tiny.cfg", "")?;
+    net.set_preferable_target(0);
 
-    let model = tract_onnx::onnx()
-        // load the model
-        .model_for_path("mobilenetv2-7.onnx")?
-        // specify input type and shape
-        .with_input_fact(0, f32::fact(&[1, 3, 224, 224]).into())?
-        // optimize the model
-        .into_optimized()?
-        // make the model runnable and fix its inputs and outputs
-        .into_runnable()?;
-
+    let out_names = net.get_unconnected_out_layers_names()?;
 
     for file in vec!("19399-video-0001.png", "19399-video-0002.png", "19399-video-0003.png") {
-        let image = image::open(file).unwrap().to_rgb8();
-        //let image = std::fs::read("imago")?;  // 1280x720 x4 (RGBA)
+        println!("Processing {}", file);
+        let image = opencv::imgcodecs::imread(file, IMREAD_UNCHANGED)?;
 
-        let resized = image::imageops::resize(&image, 224, 224, ::image::imageops::FilterType::Triangle);
+        // preprocess
+        let scale = 1.0 /*/ 255.0*/;
+        let size = (192, 192);
+        let mean = (0.0, 0.0, 0.0);
 
-        let image: Tensor = tract_ndarray::Array4::from_shape_fn((1, 3, 224, 224), |(_, c, y, x)| {
-            let mean = [0.485, 0.456, 0.406][c];
-            let std = [0.229, 0.224, 0.225][c];
-            (resized[(x as _, y as _)][c] as f32 / 255.0 - mean) / std
-        }).into();
+        let blob = blob_from_image(&image, scale, size.into(), mean.into(), false, false, CV_8U)?;
 
-        let result = model.run(tvec!(image)).unwrap();
+        net.set_input(&blob, "", scale, mean.into())?;
 
-        let best = result[0]
-            .to_array_view::<f32>()?
-            .iter()
-            .cloned()
-            .zip(2..)
-            .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-        println!("result: {:?}", best);
+        // run
+        let mut outs = VectorOfMat::new();
+        net.forward(&mut outs, &out_names)?;
+
+        // postprocess
+
+        let out_layers = net.get_unconnected_out_layers()?;
+        let out_layer_type = net.get_layer(out_layers[0]).unwrap().typ();
+
+        assert_eq!(out_layer_type, "Region");
+        for out in outs {
+            
+        }
+
+        /*
+                for (size_t i = 0; i < outs.size(); ++i)
+        {
+            // Network produces output blob with a shape NxC where N is a number of
+            // detected objects and C is a number of classes + 4 where the first 4
+            // numbers are [center_x, center_y, width, height]
+            float* data = (float*)outs[i].data;
+            for (int j = 0; j < outs[i].rows; ++j, data += outs[i].cols)
+            {
+                Mat scores = outs[i].row(j).colRange(5, outs[i].cols);
+                Point classIdPoint;
+                double confidence;
+                minMaxLoc(scores, 0, &confidence, 0, &classIdPoint);
+                if (confidence > confThreshold)
+                {
+                    int centerX = (int)(data[0] * frame.cols);
+                    int centerY = (int)(data[1] * frame.rows);
+                    int width = (int)(data[2] * frame.cols);
+                    int height = (int)(data[3] * frame.rows);
+                    int left = centerX - width / 2;
+                    int top = centerY - height / 2;
+
+                    classIds.push_back(classIdPoint.x);
+                    confidences.push_back((float)confidence);
+                    boxes.push_back(Rect(left, top, width, height));
+                }
+            }
+        }
+         */
+
     }
 
 
