@@ -182,12 +182,11 @@ fn main() -> TractResult<()> {
 
     let model = tract_onnx::onnx()
         // load the model
-        .model_for_path("tiny-yolov3-11/yolov3-tiny.onnx")?
+        .model_for_path("retinanet-9.onnx")?
         // specify input type and shape
         .with_input_fact(0, f32::fact(&[1, 3, 416, 416]).into())?
-        .with_input_fact(1, f32::fact(&[1, 2]).into())?
         // optimize the model
-        .into_optimized()?
+        //.into_optimized()?
         // make the model runnable and fix its inputs and outputs
         .into_runnable()?;
 
@@ -203,9 +202,9 @@ fn main() -> TractResult<()> {
         (resized[(x as _, y as _)][c] as f32 / 255.0 - mean) / std
     }).into();
 
-    let image_size: Tensor = tract_ndarray::Array2::from_shape_vec((1, 2),vec![1280, 720])?.into();
+    //let image_size: Tensor = tract_ndarray::Array2::from_shape_vec((1, 2),vec![1280, 720])?.into();
 
-    let result = model.run(tvec!(image, image_size)).unwrap();
+    let result = model.run(tvec!(image)).unwrap();
 
     /*let best = result[0]
         .to_array_view::<f32>()?
