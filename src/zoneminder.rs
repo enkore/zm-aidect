@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fs::{File, OpenOptions};
 use std::{fs, io, slice};
+use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::mem::size_of;
 use std::os::unix::fs::{FileExt, MetadataExt};
@@ -124,4 +125,71 @@ impl MonitorState {
 pub struct ImageToken {
     index: u32,
     size: u32,
+}
+
+#[derive(Debug)]
+struct ZoneMinderConf {
+    db_host: String,
+    db_name: String,
+    db_user: String,
+    db_password: String,
+}
+
+impl ZoneMinderConf {
+    fn parse_zm_conf(zm_conf_contents: &str) -> ZoneMinderConf {
+        let keys: HashMap<&str, &str> = zm_conf_contents
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| line.starts_with("ZM_"))
+            .filter_map(|line| line.split_once('='))
+            .collect();
+
+        ZoneMinderConf {
+            db_host: keys["ZM_DB_HOST"].to_string(),
+            db_name: keys["ZM_DB_NAME"].to_string(),
+            db_user: keys["ZM_DB_USER"].to_string(),
+            db_password: keys["ZM_DB_PASS"].to_string(),
+        }
+    }
+
+    fn parse_default() -> io::Result<ZoneMinderConf> {
+        let path = "/etc/zm/zm.conf";
+        let contents = fs::read_to_string(path)?;
+        let contents = contents + "\n" + &fs::read_dir("/etc/zm/conf.d")?
+            .filter_map(Result::ok)
+            .map(|entry| fs::read_to_string(entry.path()))
+            .filter_map(Result::ok)
+            .fold(String::new(), |a, b| a + "\n" + &b);  // O(n**2)
+
+        Ok(Self::parse_zm_conf(&contents))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_zm_conf() {
+        let conf = "# ZoneMinder database hostname or ip address and optionally port or unix socket
+# Acceptable formats include hostname[:port], ip_address[:port], or
+# localhost:/path/to/unix_socket
+ZM_DB_HOST=localhost
+
+# ZoneMinder database name
+ZM_DB_NAME=zm
+
+# ZoneMinder database user
+ZM_DB_USER=zmuser
+
+# ZoneMinder database password
+ZM_DB_PASS=zmpass
+";
+
+        let parsed = ZoneMinderConf::parse_zm_conf(conf);
+        assert_eq!(parsed.db_host, "localhost");
+        assert_eq!(parsed.db_name, "zm");
+        assert_eq!(parsed.db_user, "zmuser");
+        assert_eq!(parsed.db_password, "zmpass");
+    }
 }
