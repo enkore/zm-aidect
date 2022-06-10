@@ -1,19 +1,21 @@
-use libc::{c_char, c_double, c_void, time_t, timeval};
-use memmap2::MmapRaw;
-use opencv::core::{Mat, MatTraitConst, MatTraitConstManual, Point2f, Rect, Rect2f, Scalar, Vector, CV_8U, MatTrait, CV_8UC4};
-use opencv::dnn::{blob_from_image, nms_boxes, read_net, LayerTraitConst, NetTrait, NetTraitConst, Net};
-use opencv::types::{VectorOfMat, VectorOfRect, VectorOfString};
+use std::{io, slice, thread};
 use std::collections::HashMap;
 use std::error::Error;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
+use std::io::{ErrorKind};
 use std::mem::size_of;
-use std::thread::sleep;
+use std::os::unix::fs::FileExt;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::{fs, io, slice, thread};
+
+use libc::{c_char, c_double, time_t, timeval};
+use opencv::core::{CV_8U, CV_8UC4, Mat, MatTrait, MatTraitConst, MatTraitConstManual, Rect, Vector};
+use opencv::dnn::{blob_from_image, LayerTraitConst, Net, NetTrait, NetTraitConst, nms_boxes, read_net};
 use opencv::imgproc::{COLOR_RGBA2RGB, cvt_color};
+use opencv::types::{VectorOfMat, VectorOfRect};
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
+#[allow(dead_code)]
 struct MonitorSharedData {
     // size and offsets in ZM code is all wrong
     size: u32,
@@ -57,6 +59,7 @@ const _: [u8; 760] = [0; size_of::<MonitorSharedData>()];
 
 #[derive(Copy, Clone, Debug)]
 #[repr(u32)]
+#[allow(dead_code)]
 enum ColourType {
     GRAY8 = 1,
     RGB24 = 3,
@@ -65,6 +68,7 @@ enum ColourType {
 
 #[derive(Copy, Clone, Debug)]
 #[repr(u8)]
+#[allow(dead_code)]
 enum SubpixelOrder {
     NONE = 2, // grayscale
     RGB = 6,
@@ -77,6 +81,7 @@ enum SubpixelOrder {
 
 #[derive(Copy, Clone, Debug)]
 #[repr(u32)]
+#[allow(dead_code)]
 enum TriggerState {
     TriggerCancel,
     TriggerOn,
@@ -85,6 +90,7 @@ enum TriggerState {
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
+#[allow(dead_code)]
 struct MonitorTriggerData {
     size: u32,
     trigger_state: TriggerState,
@@ -99,6 +105,7 @@ const _: [u8; 560] = [0; size_of::<MonitorTriggerData>()];
 
 #[derive(Copy, Clone)]
 #[repr(C)]
+#[allow(dead_code)]
 struct MonitorVideoStoreData {
     // size in ZM is wrong
     size: u32,
@@ -110,35 +117,30 @@ struct MonitorVideoStoreData {
 
 const _: [u8; 4128] = [0; size_of::<MonitorVideoStoreData>()];
 
-#[repr(C)]
-struct MonitorMmapLayout {
-    shared_data: MonitorSharedData,
-    trigger_data: MonitorTriggerData,
-    videostore_data: MonitorVideoStoreData,
-    // ...
-}
-
+#[allow(dead_code)]
 struct Monitor {
-    mmap: MmapRaw,
+    file: File,
 
-    shared_data: *const MonitorSharedData,
+    image_buffer_count: u32,
+
+    /*shared_data: *const MonitorSharedData,
     trigger_data: *const MonitorTriggerData,
     videostore_data: *const MonitorVideoStoreData,
     shared_timestamps: *const timeval,
-    shared_images: *const u8,
+    shared_images: *const u8,*/
+
+    trigger_data_offset: usize,
+    videostore_data_offset: usize,
+    shared_timestamps_offset: usize,
+    shared_images_offset: usize,
 }
 
 impl Monitor {
     fn connect(monitor_id: u32) -> io::Result<Monitor> {
         let mmap_path = format!("/dev/shm/zm.mmap.{}", monitor_id);
         let file = OpenOptions::new().read(true).write(true).open(&mmap_path)?;
-        let mmap = MmapRaw::map_raw(&file)?; // we don't actually have to mmap this at all. we can just pread from the file. its just a file, bro.
 
-        let shared_data = mmap.as_ptr(); // as *const MonitorSharedData;
-
-        let image_buffer_count = 3; // needs to be retrieved from the database
-
-        let monitor = unsafe {
+        /*let monitor = unsafe {
             let trigger_data = shared_data.add(size_of::<MonitorSharedData>());
             let videostore_data = trigger_data.add(size_of::<MonitorTriggerData>());
             let shared_timestamps = videostore_data.add(size_of::<MonitorVideoStoreData>());
@@ -160,27 +162,100 @@ impl Monitor {
             );
 
             Monitor {
-                mmap,
+                file,
                 shared_data,
                 trigger_data,
                 videostore_data,
                 shared_timestamps,
                 shared_images,
             }
-        };
+        };*/
 
-        Ok(monitor)
+        let image_buffer_count = 3;  // needs to be retrieved from the database
+
+        let trigger_data_offset = size_of::<MonitorSharedData>();
+        let videostore_data_offset = trigger_data_offset + size_of::<MonitorTriggerData>();
+        let shared_timestamps_offset = videostore_data_offset + size_of::<MonitorVideoStoreData>();
+        let shared_images_offset = shared_timestamps_offset + image_buffer_count * size_of::<timeval>();
+        let shared_images_offset = shared_images_offset + 64 - (shared_images_offset % 64);
+
+        Ok(Monitor {
+            file,
+            image_buffer_count: image_buffer_count as u32,
+            trigger_data_offset,
+            videostore_data_offset,
+            shared_timestamps_offset,
+            shared_images_offset,
+        })
     }
 
-    fn valid(&self) -> bool {
-        // should use self.read_volatile().valid or have entirely separate read() method which gives a pubstruct
-        unsafe { (*self.shared_data).valid > 0 }
+    fn pread<T>(&self, offset: usize) -> io::Result<T> {
+        let mut buf = Vec::new();
+        buf.resize(size_of::<T>(), 0);
+        self.file.read_exact_at(&mut buf, offset as u64)?;
+        unsafe {
+            Ok(std::ptr::read(buf.as_ptr() as *const _))
+        }
     }
 
+    fn read(&self) -> io::Result<MonitorState> {
+        let shared_data: MonitorSharedData = self.pread(0)?;
+        let trigger_data: MonitorTriggerData = self.pread(self.trigger_data_offset)?;
+        if shared_data.valid == 0 {
+            return Err(io::Error::new(ErrorKind::Other, "Monitor shm is not valid"));
+        }
+        Ok(MonitorState {
+            shared_data, trigger_data
+        })
+    }
+
+/*    fn read_image(&mut self, index: u32) -> io::Result<Mat> {
+
+    }
+*/
+    fn read_image(&self, token: ImageToken) -> Result<Mat, Box<dyn Error>> {
+        assert_eq!(1280 * 720 * 4, token.size);
+        let mut mat = Mat::new_size_with_default((1280, 720).into(), CV_8UC4, 0.into())?;
+        self.read_image_into(token, &mut mat)?;
+        Ok(mat)
+    }
+
+    fn read_image_into(&self, token: ImageToken, mat: &mut Mat) -> Result<(), Box<dyn Error>> {
+        assert_eq!(1280 * 720, mat.total());
+        assert_eq!(mat.typ(), CV_8UC4);
+        let mut slice = unsafe { slice::from_raw_parts_mut(mat.ptr_mut(0)?, token.size as usize) };
+        let image_offset = self.shared_images_offset as u64 + token.size as u64 * token.index as u64;
+        self.file.read_exact_at(&mut slice, image_offset)?;
+        Ok(())
+    }
+}
+
+struct MonitorState {
+    shared_data: MonitorSharedData,
+    trigger_data: MonitorTriggerData,
+}
+
+impl MonitorState {
     fn last_write_time(&self) -> SystemTime {
-        let value = unsafe { (*self.shared_data).last_write_time };
+        let value = self.shared_data.last_write_time;
         UNIX_EPOCH + Duration::from_secs(value as u64)
     }
+
+    fn last_write_index(&self) -> u32 {
+        self.shared_data.last_write_index as u32
+    }
+
+    fn last_image_token(&self) -> ImageToken {
+        ImageToken {
+            index: self.last_write_index(),
+            size: self.shared_data.imagesize,
+        }
+    }
+}
+
+struct ImageToken {
+    index: u32,
+    size: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -197,7 +272,6 @@ struct YoloV4Tiny {
     size: i32,
 
     out_names: Vector<String>,
-    out_layers: Vector<i32>,
 }
 
 impl YoloV4Tiny {
@@ -212,7 +286,7 @@ impl YoloV4Tiny {
 
         Ok(YoloV4Tiny {
             net,
-            out_names, out_layers,
+            out_names,
             confidence_threshold: confidence_threshold,
             nms_threshold: 0.4,
             size: size,
@@ -296,7 +370,7 @@ impl YoloV4Tiny {
 
         let mut nms_detections = vec![];
 
-        for (&class_id, detections) in &class2detections {
+        for (_, detections) in &class2detections {
             let bounding_boxes: VectorOfRect =
                 detections.iter().map(|det| det.bounding_box).collect();
             let confidences: Vector<f32> = detections.iter().map(|det| det.confidence).collect();
@@ -390,35 +464,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     //run for real
     let mid = 5;
     let monitor = Monitor::connect(mid)?;
-    println!("Monitor shm valid: {}", monitor.valid());
+    let mut last_read_index = monitor.image_buffer_count;
 
-    let image_buffer_count = 3;  // needs to be retrieved from the database
-    let mut last_read_index = image_buffer_count;
-
-    let image_size = unsafe { (*monitor.shared_data).imagesize };
-
-    println!("Image size is claimed to be: {}", image_size);
+    //let image_size = unsafe { (*monitor.shared_data).imagesize };
+    //println!("Image size is claimed to be: {}", image_size);
 
     loop {
         //println!("Last write time: {:?}", monitor.last_write_time());
         //sleep(Duration::from_millis(500));
 
-        let last_write_index = unsafe { (*monitor.shared_data).last_write_index };
-        if last_write_index != last_read_index && last_write_index != image_buffer_count {
-            let timestamp = unsafe { *monitor.shared_timestamps.offset(last_write_index as isize) };
-            let timestamp = UNIX_EPOCH + Duration::from_secs(timestamp.tv_sec as u64) + Duration::from_micros(timestamp.tv_usec as u64);
-            println!("New image available at index {}, timestamp {:?}", last_write_index, timestamp);
+        let state = monitor.read()?;
+
+        let last_write_index = state.last_write_index();
+        if last_write_index != last_read_index && last_write_index != monitor.image_buffer_count {
+            //let timestamp = unsafe { *monitor.shared_timestamps.offset(last_write_index as isize) };
+            //let timestamp = UNIX_EPOCH + Duration::from_secs(timestamp.tv_sec as u64) + Duration::from_micros(timestamp.tv_usec as u64);
+            //println!("New image available at index {}, timestamp {:?}", last_write_index, timestamp);
+            println!("New image available at index {}", last_write_index);
             last_read_index = last_write_index;
 
-            let image_data = unsafe { slice::from_raw_parts(monitor.shared_images, image_size as usize) };
-            let mut image_data = image_data.to_vec();
-
-            let image = unsafe {
-                //let image_data = monitor.shared_images.add(image_size as usize * last_write_index as usize);
-                let image_row_size = 1280 * 4;
-
-                Mat::new_rows_cols_with_data(1280, 720, CV_8UC4, image_data.as_mut_ptr() as *mut c_void, image_row_size)?
-            };
+            let image = monitor.read_image(state.last_image_token())?;
 
             let mut rgb_image = Mat::default();
             cvt_color(&image, &mut rgb_image, COLOR_RGBA2RGB, 0)?;
@@ -432,7 +497,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("Inference completed in {:?}:\n{:#?}",
                      td, detections);
 
-            std::fs::write(format!("/tmp/imago-{:?}", timestamp), image_data)?;
+            //std::fs::write(format!("/tmp/imago-{:?}", timestamp), image_data)?;
 
             thread::sleep(Duration::from_millis(300));
         }
