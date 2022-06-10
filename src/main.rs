@@ -3,7 +3,7 @@ use std::error::Error;
 use std::time::{Duration, Instant};
 
 use opencv::core::Mat;
-use opencv::imgproc::{COLOR_RGBA2RGB, cvt_color};
+use opencv::imgproc::{cvt_color, COLOR_RGBA2RGB};
 use simple_moving_average::SMA;
 
 mod ml;
@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut yolo = ml::YoloV4Tiny::new(
         monitor.zone.threshold.unwrap_or(0.5),
-        monitor.zone.size.unwrap_or(256)
+        monitor.zone.size.unwrap_or(256),
     )?;
 
     let mut last_read_index = monitor.image_buffer_count;
@@ -104,7 +104,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut delay_sma = simple_moving_average::NoSumSMA::<_, f32, 10>::new();
 
-    let max_fps = monitor.zone.fps.map(|v| v as f32).unwrap_or(monitor.max_fps);
+    let max_fps = monitor
+        .zone
+        .fps
+        .map(|v| v as f32)
+        .unwrap_or(monitor.max_fps);
 
     loop {
         //println!("Last write time: {:?}", monitor.last_write_time());
@@ -132,21 +136,37 @@ fn main() -> Result<(), Box<dyn Error>> {
             if detections.len() > 0 {
                 println!("Inference result (took {:?}): {:#?}", td, detections);
 
-                let classes : HashMap<i32, &str> = [
+                let classes: HashMap<i32, &str> = [
                     (1, "Human"), // person
-                    (3, "Car"), // car
+                    (3, "Car"),   // car
                     (15, "Bird"), // bird
-                    (16, "Cat"), // cat
-                    (17, "Dog"), // dog
-                ].into();
+                    (16, "Cat"),  // cat
+                    (17, "Dog"),  // dog
+                ]
+                .into();
 
-                if let Some(d) = detections.iter().filter(|d| classes.contains_key(&d.class_id)).next() {
-                    let description = format!("{} ({:.1}%) {}x{} (={}) at {}x{}",
-                        classes[&d.class_id], d.confidence * 100.0, d.bounding_box.width, d.bounding_box.height,
-                        d.bounding_box.width * d.bounding_box.height, d.bounding_box.x, d.bounding_box.y
+                if let Some(d) = detections
+                    .iter()
+                    .filter(|d| classes.contains_key(&d.class_id))
+                    .next()
+                {
+                    let description = format!(
+                        "{} ({:.1}%) {}x{} (={}) at {}x{}",
+                        classes[&d.class_id],
+                        d.confidence * 100.0,
+                        d.bounding_box.width,
+                        d.bounding_box.height,
+                        d.bounding_box.width * d.bounding_box.height,
+                        d.bounding_box.x,
+                        d.bounding_box.y
                     );
                     let trigger_id = monitor.zone.trigger.unwrap_or(monitor_id);
-                    if let Err(e) = zoneminder::zmtrigger::trigger_autocancel(trigger_id, "aidect", &description, 1) {
+                    if let Err(e) = zoneminder::zmtrigger::trigger_autocancel(
+                        trigger_id,
+                        "aidect",
+                        &description,
+                        1,
+                    ) {
                         eprintln!("Failed to trigger zm: {}", e);
                     }
                 }
@@ -162,7 +182,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 if sleep_time > 0.0 {
                     std::thread::sleep(Duration::from_secs_f32(sleep_time));
                 } else if td.as_secs_f32() > target_interval {
-                    eprintln!("Cannot keep up with max-analysis-fps (inference taking {:?})!", td);
+                    eprintln!(
+                        "Cannot keep up with max-analysis-fps (inference taking {:?})!",
+                        td
+                    );
                 }
             }
             last_frame_completed = Some(Instant::now());

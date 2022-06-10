@@ -1,7 +1,9 @@
-use std::collections::HashMap;
-use opencv::core::{Mat, Vector, Rect, CV_8U, MatTraitConst, MatTraitConstManual};
-use opencv::dnn::{blob_from_image, LayerTraitConst, Net, NetTrait, NetTraitConst, nms_boxes, read_net};
+use opencv::core::{Mat, MatTraitConst, MatTraitConstManual, Rect, Vector, CV_8U};
+use opencv::dnn::{
+    blob_from_image, nms_boxes, read_net, LayerTraitConst, Net, NetTrait, NetTraitConst,
+};
 use opencv::types::{VectorOfMat, VectorOfRect};
+use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub struct Detection {

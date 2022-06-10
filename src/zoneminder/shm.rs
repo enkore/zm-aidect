@@ -1,5 +1,5 @@
-use std::mem::size_of;
 use libc::{c_char, c_double, time_t, timeval};
+use std::mem::size_of;
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
