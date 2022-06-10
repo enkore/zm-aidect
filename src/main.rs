@@ -2,7 +2,6 @@ use libc::{c_char, c_double, c_void, time_t, timeval};
 use memmap2::MmapRaw;
 use opencv::core::{Mat, MatTraitConst, MatTraitConstManual, Point2f, Rect, Rect2f, Scalar, Vector, CV_8U, MatTrait, CV_8UC4};
 use opencv::dnn::{blob_from_image, nms_boxes, read_net, LayerTraitConst, NetTrait, NetTraitConst, Net};
-use opencv::imgcodecs::IMREAD_UNCHANGED;
 use opencv::types::{VectorOfMat, VectorOfRect, VectorOfString};
 use std::collections::HashMap;
 use std::error::Error;
@@ -11,6 +10,7 @@ use std::mem::size_of;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{io, slice};
+use opencv::imgproc::{COLOR_RGBA2RGB, cvt_color};
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
@@ -380,7 +380,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         if last_write_index != last_read_index && last_write_index != image_buffer_count {
             let timestamp = unsafe { *monitor.shared_timestamps.offset(last_write_index as isize) };
             let timestamp = UNIX_EPOCH + Duration::from_secs(timestamp.tv_sec as u64) + Duration::from_micros(timestamp.tv_usec as u64);
-            println!("New image available at index {}, timestamp {:?}", last_write_index, timestamp);
+            //println!("New image available at index {}, timestamp {:?}", last_write_index, timestamp);
             last_read_index = last_write_index;
 
             //let image_data = unsafe { slice::from_raw_parts(monitor.shared_images, image_size as usize) };
@@ -393,11 +393,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Mat::new_rows_cols_with_data(1280, 720, CV_8UC4, image_data as *mut c_void, image_row_size)?
             };
 
+            let mut rgb_image = Mat::default();
+            cvt_color(&image, &mut rgb_image, COLOR_RGBA2RGB, 0)?;
+
+            //println!("Shape: {:?}", rgb_image);
+
             let t0 = Instant::now();
-            let detections = yolo.infer(&image)?;
+            let detections = yolo.infer(&rgb_image)?;
             let td = Instant::now() - t0;
-            println!("Inference completed in {:?}:\n{:#?}",
-                     td, detections);
+
+            if detections.len() > 1 {
+                println!("Inference completed in {:?}:\n{:#?}",
+                         td, detections);
+            }
 
             //std::fs::write("/tmp/imago", image_data)?;
         }
