@@ -1,8 +1,6 @@
-use libc::{c_char, c_double, time_t, timeval};
+use libc::{c_char, c_double, c_void, time_t, timeval};
 use memmap2::MmapRaw;
-use opencv::core::{
-    Mat, MatTraitConst, MatTraitConstManual, Point2f, Rect, Rect2f, Scalar, Vector, CV_8U,
-};
+use opencv::core::{Mat, MatTraitConst, MatTraitConstManual, Point2f, Rect, Rect2f, Scalar, Vector, CV_8U, MatTrait, CV_8UC4};
 use opencv::dnn::{blob_from_image, nms_boxes, read_net, LayerTraitConst, NetTrait, NetTraitConst, Net};
 use opencv::imgcodecs::IMREAD_UNCHANGED;
 use opencv::types::{VectorOfMat, VectorOfRect, VectorOfString};
@@ -327,22 +325,44 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut yolo = YoloV4Tiny::new(0.5, 256)?;
 
-    for file in vec![
+    /*for file in vec![
         "19399-video-0001.png",
         "19399-video-0002.png",
         "19399-video-0003.png",
     ] {
         println!("Processing {}", file);
         let image = opencv::imgcodecs::imread(file, IMREAD_UNCHANGED)?;
+        println!("{:#?}", image);
 
         let t0 = Instant::now();
         let detections = yolo.infer(&image)?;
         let td = Instant::now() - t0;
         println!("Inference completed in {:?}:\n{:#?}",
                  td, detections);
-    }
+    }*/
 
-    /*let monitor = Monitor::connect(mid)?;
+    /* image should look like
+    Mat {
+        type: "CV_8UC3",
+        flags: 1124024336,
+        channels: 3,
+        depth: "CV_8U",
+        dims: 2,
+        size: Size_ {
+            width: 1280,
+            height: 720,
+        },
+        rows: 720,
+        cols: 1280,
+        elem_size: 3,
+        elem_size1: 1,
+        total: 921600,
+        is_continuous: true,
+        is_submatrix: false,
+    }
+     */
+
+    let monitor = Monitor::connect(mid)?;
     println!("Monitor shm valid: {}", monitor.valid());
 
     let image_buffer_count = 3;  // needs to be retrieved from the database
@@ -363,11 +383,24 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("New image available at index {}, timestamp {:?}", last_write_index, timestamp);
             last_read_index = last_write_index;
 
-            let image_data = unsafe { slice::from_raw_parts(monitor.shared_images, image_size as usize) };
-            let image_data = image_data.to_vec();
+            //let image_data = unsafe { slice::from_raw_parts(monitor.shared_images, image_size as usize) };
+            //let image_data = image_data.to_vec();
 
-            std::fs::write("/tmp/imago", image_data)?;
+            let image = unsafe {
+                let image_data = monitor.shared_images.add(image_size as usize * last_write_index as usize);
+                let image_row_size = 1280 * 4;
+
+                Mat::new_rows_cols_with_data(1280, 720, CV_8UC4, image_data as *mut c_void, image_row_size)?
+            };
+
+            let t0 = Instant::now();
+            let detections = yolo.infer(&image)?;
+            let td = Instant::now() - t0;
+            println!("Inference completed in {:?}:\n{:#?}",
+                     td, detections);
+
+            //std::fs::write("/tmp/imago", image_data)?;
         }
-    }*/
+    }
     Ok(())
 }
