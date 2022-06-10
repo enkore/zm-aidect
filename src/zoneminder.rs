@@ -171,6 +171,7 @@ pub struct ZoneConfig {
     pub threshold: Option<f32>,
     pub shape: Vec<(u32, u32)>,
     pub trigger: Option<u32>,
+    pub fps: Option<u32>,
 }
 
 impl ZoneConfig {
@@ -188,13 +189,16 @@ impl ZoneConfig {
             .filter_map(|x| x)
             .collect();
 
+        let get_int = |key| keys.get(key).and_then(|v| v.trim().parse::<u32>().ok());
+
         ZoneConfig {
             shape: Vec::new(),
             threshold: keys.get("Threshold")
                 .and_then(|v| v.trim().parse::<f32>().ok())
                 .map(|v| v / 100.0),
-            size: keys.get("Size").and_then(|v| v.trim().parse::<u32>().ok()),
-            trigger: keys.get("Trigger").and_then(|v| v.trim().parse::<u32>().ok()),
+            size: get_int("Size"),
+            trigger: get_int("Trigger"),
+            fps: get_int("FPS"),
         }
     }
 

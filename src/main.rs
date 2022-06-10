@@ -104,7 +104,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut delay_sma = simple_moving_average::NoSumSMA::<_, f32, 10>::new();
 
-    let max_fps = if monitor.max_fps > 2.0 { 2.0 } else { monitor.max_fps };
+    let max_fps = monitor.zone.fps.map(|v| v as f32).unwrap_or(monitor.max_fps);
 
     loop {
         //println!("Last write time: {:?}", monitor.last_write_time());
