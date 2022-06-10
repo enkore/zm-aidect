@@ -9,7 +9,7 @@ use std::fs::OpenOptions;
 use std::mem::size_of;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::{io, slice};
+use std::{fs, io, slice};
 use opencv::imgproc::{COLOR_RGBA2RGB, cvt_color};
 
 #[derive(Copy, Clone, Debug)]
@@ -325,6 +325,30 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut yolo = YoloV4Tiny::new(0.5, 256)?;
 
+    let mut image_data = fs::read("imago_with_human.rgba")?;
+
+    let image = unsafe {
+        //let image_data = monitor.shared_images.add(image_size as usize * last_write_index as usize);
+        let image_data = image_data.as_mut_ptr();
+        let image_row_size = 1280 * 4;
+
+        Mat::new_rows_cols_with_data(1280, 720, CV_8UC4, image_data as *mut c_void, image_row_size)?
+    };
+
+    let mut rgb_image = Mat::default();
+    cvt_color(&image, &mut rgb_image, COLOR_RGBA2RGB, 0)?;
+
+    //println!("Shape: {:?}", rgb_image);
+
+    let t0 = Instant::now();
+    let detections = yolo.infer(&rgb_image)?;
+    let td = Instant::now() - t0;
+
+    println!("Inference completed in {:?}:\n{:#?}",
+             td, detections);
+
+    Ok(())
+
     /*for file in vec![
         "19399-video-0001.png",
         "19399-video-0002.png",
@@ -362,6 +386,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
      */
 
+    /*
     let monitor = Monitor::connect(mid)?;
     println!("Monitor shm valid: {}", monitor.valid());
 
@@ -402,13 +427,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             let detections = yolo.infer(&rgb_image)?;
             let td = Instant::now() - t0;
 
-            if detections.len() > 1 {
-                println!("Inference completed in {:?}:\n{:#?}",
-                         td, detections);
-            }
+            println!("Inference completed in {:?}:\n{:#?}",
+                     td, detections);
 
             //std::fs::write("/tmp/imago", image_data)?;
         }
     }
-    Ok(())
+    Ok(())*/
 }
