@@ -9,7 +9,7 @@ use std::fs::OpenOptions;
 use std::mem::size_of;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::{fs, io, slice};
+use std::{fs, io, slice, thread};
 use opencv::imgproc::{COLOR_RGBA2RGB, cvt_color};
 
 #[derive(Copy, Clone, Debug)]
@@ -321,10 +321,10 @@ impl YoloV4Tiny {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mid = 5;
-
     let mut yolo = YoloV4Tiny::new(0.5, 256)?;
 
+    /*
+    // run on raw image
     let mut image_data = fs::read("imago_with_human.rgba")?;
 
     let image = unsafe {
@@ -347,9 +347,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Inference completed in {:?}:\n{:#?}",
              td, detections);
 
-    Ok(())
-
-    /*for file in vec![
+    */
+    /*
+    // run on pngs
+    for file in vec![
         "19399-video-0001.png",
         "19399-video-0002.png",
         "19399-video-0003.png",
@@ -386,7 +387,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
      */
 
-    /*
+    //run for real
+    let mid = 5;
     let monitor = Monitor::connect(mid)?;
     println!("Monitor shm valid: {}", monitor.valid());
 
@@ -405,23 +407,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         if last_write_index != last_read_index && last_write_index != image_buffer_count {
             let timestamp = unsafe { *monitor.shared_timestamps.offset(last_write_index as isize) };
             let timestamp = UNIX_EPOCH + Duration::from_secs(timestamp.tv_sec as u64) + Duration::from_micros(timestamp.tv_usec as u64);
-            //println!("New image available at index {}, timestamp {:?}", last_write_index, timestamp);
+            println!("New image available at index {}, timestamp {:?}", last_write_index, timestamp);
             last_read_index = last_write_index;
 
-            //let image_data = unsafe { slice::from_raw_parts(monitor.shared_images, image_size as usize) };
-            //let image_data = image_data.to_vec();
+            let image_data = unsafe { slice::from_raw_parts(monitor.shared_images, image_size as usize) };
+            let mut image_data = image_data.to_vec();
 
             let image = unsafe {
-                let image_data = monitor.shared_images.add(image_size as usize * last_write_index as usize);
+                //let image_data = monitor.shared_images.add(image_size as usize * last_write_index as usize);
                 let image_row_size = 1280 * 4;
 
-                Mat::new_rows_cols_with_data(1280, 720, CV_8UC4, image_data as *mut c_void, image_row_size)?
+                Mat::new_rows_cols_with_data(1280, 720, CV_8UC4, image_data.as_mut_ptr() as *mut c_void, image_row_size)?
             };
 
             let mut rgb_image = Mat::default();
             cvt_color(&image, &mut rgb_image, COLOR_RGBA2RGB, 0)?;
 
-            //println!("Shape: {:?}", rgb_image);
+            println!("Shape: {:?}", rgb_image);
 
             let t0 = Instant::now();
             let detections = yolo.infer(&rgb_image)?;
@@ -430,8 +432,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("Inference completed in {:?}:\n{:#?}",
                      td, detections);
 
-            //std::fs::write("/tmp/imago", image_data)?;
+            std::fs::write(format!("/tmp/imago-{:?}", timestamp), image_data)?;
+
+            thread::sleep(Duration::from_millis(300));
         }
     }
-    Ok(())*/
+    Ok(())
 }
