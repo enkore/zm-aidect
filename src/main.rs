@@ -6,7 +6,7 @@ use std::error::Error;
 use std::mem::size_of;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use opencv::core::{CV_8U, Mat, Scalar};
+use opencv::core::{CV_8U, Mat, MatTraitConst, MatTraitConstManual, Scalar};
 use opencv::dnn::{blob_from_image, LayerTraitConst, NetTrait, NetTraitConst, read_net};
 use opencv::imgcodecs::IMREAD_UNCHANGED;
 use opencv::types::VectorOfMat;
@@ -182,8 +182,10 @@ impl Monitor {
 fn main() -> Result<(), Box<dyn Error>> {
     let mid = 5;
 
+    let confidence_threshold = 0.5;
+
     let mut net = read_net("yolov4-tiny.weights", "yolov4-tiny.cfg", "")?;
-    net.set_preferable_target(0);
+    net.set_preferable_target(0)?;
 
     let out_names = net.get_unconnected_out_layers_names()?;
 
@@ -207,11 +209,38 @@ fn main() -> Result<(), Box<dyn Error>> {
         // postprocess
 
         let out_layers = net.get_unconnected_out_layers()?;
-        let out_layer_type = net.get_layer(out_layers[0]).unwrap().typ();
+        let out_layer_type = net.get_layer(out_layers.get(0).unwrap()).unwrap().typ();
 
         assert_eq!(out_layer_type, "Region");
         for out in outs {
-            
+            // Network produces output blob with a shape NxC where N is a number of
+            // detected objects and C is a number of classes + 4 where the first 4
+            // numbers are [center_x, center_y, width, height]
+
+            println!("out: {:#?}", out);
+
+            for row_idx in 0..out.rows() {
+                let row = out.at_row::<f32>(row_idx).unwrap();
+
+                let (center_x, center_y) = (row[0], row[1]);
+                let (width, heigt) = (row[2], row[3]);
+
+                let class = row[5..]
+                    .iter()
+                    .cloned()
+                    .zip(2..)
+                    .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                if let None = class {
+                    continue
+                }
+                let (confidence, class_id) = class.unwrap();
+
+                if confidence < confidence_threshold {
+                    continue
+                }
+
+                println!("   {}: {:?} @ {}", row_idx, confidence, class_id);
+            }
         }
 
         /*
