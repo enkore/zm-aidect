@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::error::Error;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use opencv::core::Mat;
 use opencv::imgproc::{COLOR_RGBA2RGB, cvt_color};
@@ -127,24 +128,27 @@ fn main() -> Result<(), Box<dyn Error>> {
             let detections = yolo.infer(&rgb_image)?;
             let t1 = Instant::now();
             let td = t1 - t0;
+
             if detections.len() > 0 {
                 println!("Inference result (took {:?}): {:#?}", td, detections);
 
-                let classes = vec![
-                    1, // person
-                    3, // car
-                    15, // bird
-                    16, // cat
-                    17, // dog
-                ];
+                let classes : HashMap<i32, &str> = [
+                    (1, "Human"), // person
+                    (3, "Car"), // car
+                    (15, "Bird"), // bird
+                    (16, "Cat"), // cat
+                    (17, "Dog"), // dog
+                ].into();
 
-                if let Some(d) = detections.iter().filter(|d| classes.contains(&d.class_id)).next() {
-                    let description = format!("class: {} confidence: {:.1}% bounding {}x{} (area: {}) at {}x{}",
-                        d.class_id, d.confidence * 100.0, d.bounding_box.width, d.bounding_box.height,
+                if let Some(d) = detections.iter().filter(|d| classes.contains_key(&d.class_id)).next() {
+                    let description = format!("{} ({:.1}%) {}x{} (={}) at {}x{}",
+                        classes[&d.class_id], d.confidence * 100.0, d.bounding_box.width, d.bounding_box.height,
                         d.bounding_box.width * d.bounding_box.height, d.bounding_box.x, d.bounding_box.y
                     );
                     let trigger_id = monitor.zone.trigger.unwrap_or(monitor_id);
-                    zoneminder::zmtrigger::trigger_autocancel(trigger_id, "aidect", &description, 1);
+                    if let Err(e) = zoneminder::zmtrigger::trigger_autocancel(trigger_id, "aidect", &description, 1) {
+                        eprintln!("Failed to trigger zm: {}", e);
+                    }
                 }
             }
 
@@ -166,5 +170,4 @@ fn main() -> Result<(), Box<dyn Error>> {
             //std::fs::write(format!("/tmp/imago-{:?}", timestamp), image_data)?;
         }
     }
-    Ok(())
 }
