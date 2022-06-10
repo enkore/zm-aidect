@@ -138,7 +138,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let sleep_time = delay_sma.get_average();
                 if sleep_time > 0.0 {
                     std::thread::sleep(Duration::from_secs_f32(sleep_time));
-                } else {
+                } else if td.as_secs_f32() > target_interval {
                     eprintln!("Cannot keep up with max-analysis-fps (inference taking {:?})!", td);
                 }
             }
