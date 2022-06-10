@@ -12,6 +12,7 @@ use opencv::core::{CV_8U, CV_8UC4, Mat, MatTrait, MatTraitConst, MatTraitConstMa
 use opencv::dnn::{blob_from_image, LayerTraitConst, Net, NetTrait, NetTraitConst, nms_boxes, read_net};
 use opencv::imgproc::{COLOR_RGBA2RGB, cvt_color};
 use opencv::types::{VectorOfMat, VectorOfRect};
+use simple_moving_average::SMA;
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
@@ -463,11 +464,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     //run for real
     let mid = 5;
+    let max_fps = 2.0;
     let monitor = Monitor::connect(mid)?;
     let mut last_read_index = monitor.image_buffer_count;
 
     //let image_size = unsafe { (*monitor.shared_data).imagesize };
     //println!("Image size is claimed to be: {}", image_size);
+
+    let mut last_frame_completed: Option<Instant> = None;
+
+    let mut delay_sma = simple_moving_average::NoSumSMA::<_, f32, 10>::new();
 
     loop {
         //println!("Last write time: {:?}", monitor.last_write_time());
@@ -480,7 +486,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             //let timestamp = unsafe { *monitor.shared_timestamps.offset(last_write_index as isize) };
             //let timestamp = UNIX_EPOCH + Duration::from_secs(timestamp.tv_sec as u64) + Duration::from_micros(timestamp.tv_usec as u64);
             //println!("New image available at index {}, timestamp {:?}", last_write_index, timestamp);
-            println!("New image available at index {}", last_write_index);
             last_read_index = last_write_index;
 
             let image = monitor.read_image(state.last_image_token())?;
@@ -488,18 +493,28 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut rgb_image = Mat::default();
             cvt_color(&image, &mut rgb_image, COLOR_RGBA2RGB, 0)?;
 
-            println!("Shape: {:?}", rgb_image);
-
             let t0 = Instant::now();
             let detections = yolo.infer(&rgb_image)?;
-            let td = Instant::now() - t0;
+            let t1 = Instant::now();
+            let td = t1 - t0;
+            println!("{:?}: Inference completed in {:?}: {:#?}", SystemTime::now(), td, detections);
 
-            println!("Inference completed in {:?}:\n{:#?}",
-                     td, detections);
+            if let Some(last_frame_completed) = last_frame_completed {
+                let real_interval = (t1 - last_frame_completed).as_secs_f32();
+                let target_interval = 1.0f32 / max_fps;
+                let delta = target_interval - real_interval;
+                delay_sma.add_sample(delta);
+
+                let sleep_time = delay_sma.get_average();
+                if sleep_time > 0.0 {
+                    thread::sleep(Duration::from_secs_f32(sleep_time));
+                } else {
+                    eprintln!("Cannot keep up with max-analysis-fps (inference taking {:?})!", td);
+                }
+            }
+            last_frame_completed = Some(Instant::now());
 
             //std::fs::write(format!("/tmp/imago-{:?}", timestamp), image_data)?;
-
-            thread::sleep(Duration::from_millis(300));
         }
     }
     Ok(())
