@@ -71,22 +71,10 @@ version = "0.22.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5237f00a8c86130a0cc317830e558b966dd7850d48a953d998c813f01a41b527"
 dependencies = [
- "funty 1.2.0",
- "radium 0.6.2",
+ "funty",
+ "radium",
  "tap",
- "wyz 0.4.0",
-]
-
-[[package]]
-name = "bitvec"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1489fcb93a5bb47da0462ca93ad252ad6af2145cce58d10d46a83931ba9f016b"
-dependencies = [
- "funty 2.0.0",
- "radium 0.7.0",
- "tap",
- "wyz 0.5.0",
+ "wyz",
 ]
 
 [[package]]
@@ -320,12 +308,6 @@ name = "funty"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1847abb9cb65d566acd5942e94aea9c8f547ad02c98e1649326fc0e8910b8b1e"
-
-[[package]]
-name = "funty"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 
 [[package]]
 name = "generic-array"
@@ -577,7 +559,7 @@ dependencies = [
  "io-enum",
  "libc",
  "lru",
- "mysql_common 0.28.2",
+ "mysql_common",
  "named_pipe",
  "nix",
  "once_cell",
@@ -599,39 +581,7 @@ dependencies = [
  "base64",
  "bindgen",
  "bitflags",
- "bitvec 0.22.3",
- "byteorder",
- "bytes",
- "cc",
- "cmake",
- "crc32fast",
- "flate2",
- "lazy_static",
- "lexical",
- "num-bigint",
- "num-traits",
- "rand",
- "regex",
- "saturating",
- "serde",
- "serde_json",
- "sha-1",
- "sha2",
- "smallvec",
- "subprocess",
- "thiserror",
-]
-
-[[package]]
-name = "mysql_common"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20ce6fdcef94a8e87fea3f9402de4d7e403f10e8c20b6e2bd207e6b6f8a4eab0"
-dependencies = [
- "base64",
- "bindgen",
- "bitflags",
- "bitvec 1.0.0",
+ "bitvec",
  "byteorder",
  "bytes",
  "cc",
@@ -814,12 +764,6 @@ name = "radium"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "643f8f41a8ebc4c5dc4515c82bb8abd397b527fc20fd681b7c011c2aee5d44fb"
-
-[[package]]
-name = "radium"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 
 [[package]]
 name = "rand"
@@ -1136,22 +1080,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "wyz"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30b31594f29d27036c383b53b59ed3476874d518f0efb151b27a4c275141390e"
-dependencies = [
- "tap",
-]
-
-[[package]]
 name = "zoneminder-aidect"
 version = "0.1.0"
 dependencies = [
  "flate2",
  "libc",
  "mysql",
- "mysql_common 0.29.0",
  "opencv",
  "simple_moving_average",
 ]

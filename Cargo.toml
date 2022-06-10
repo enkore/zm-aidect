@@ -15,4 +15,3 @@ simple_moving_average = "0.1.2"
 opencv = { version = "0.64.0", features = ["clang-runtime"] }
 mysql = { version = "22.1.0", default-features = false }
 flate2 = { version = "*", default-features = false, features = ["zlib"] }
-mysql_common = { version = "*", default-features = false }
