@@ -190,16 +190,24 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let out_names = net.get_unconnected_out_layers_names()?;
 
-    for file in vec!("19399-video-0001.png" /*, "19399-video-0002.png", "19399-video-0003.png"*/ ) {
+    for file in vec!("19399-video-0001.png", "19399-video-0002.png", "19399-video-0003.png") {
         println!("Processing {}", file);
+
+        let t0 = Instant::now();
+
         let image = opencv::imgcodecs::imread(file, IMREAD_UNCHANGED)?;
+        println!("Image dims: {:?}", image);
+
+        let tload = Instant::now();
 
         // preprocess
         //let scale = 1.0 /*/ 255.0*/;
-        let size = (192, 192);
+        let size = (256, 256);
         let mean = (0.0, 0.0, 0.0);
 
+        let t1 = Instant::now();
         let blob = blob_from_image(&image, 1.0, size.into(), mean.into(), false, false, CV_8U)?;
+        println!("Blob dims: {:?}", blob);
 
         let scale = 1.0 / 255.0;
         net.set_input(&blob, "", scale, mean.into())?;
@@ -208,7 +216,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut outs = VectorOfMat::new();
         net.forward(&mut outs, &out_names)?;
 
+        let trun = Instant::now() - t1;
+
         // postprocess
+        let t2 = Instant::now();
 
         let out_layers = net.get_unconnected_out_layers()?;
         let out_layer_type = net.get_layer(out_layers.get(0).unwrap()).unwrap().typ();
@@ -226,6 +237,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         assert_eq!(out_layer_type, "Region");
         let image_width = image.cols() as f32;
         let image_height = image.rows() as f32;
+
+        let all_detections: i32 = outs.iter().map(|out| out.rows()).sum();
         for out in outs {
             // Network produces output blob with a shape NxC where N is a number of
             // detected objects and C is a number of classes + 4 where the first 4
@@ -251,13 +264,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                 let class = row[4..]
                     .iter()
-                    .cloned()
+                    //.cloned()
                     .zip(1..)  // 1.. for 1-based class index, 0.. for 0-based
                     .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-                if let None = class {
-                    continue
-                }
-                let (confidence, class_id) = class.unwrap();
+                let (&confidence, class_id) = class.unwrap();
 
                 if confidence < confidence_threshold {
                     continue
@@ -296,7 +306,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             //nms_boxes()
         }
 
-        println!("{:#?}", nms_detections);
+        let tpost = Instant::now() - t2;
+
+        let pre_nms = detections.len();
+
+        let td = Instant::now() - t0;
+        println!("Inference completed in {:?} (load {:?}, net runtime {:?}, post {:?}) {} -> {} -> {}:\n{:#?}",
+                 td, tload - t0, trun, tpost,
+                all_detections, pre_nms, nms_detections.len(),
+                 nms_detections);
     }
 
 
