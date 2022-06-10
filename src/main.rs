@@ -87,6 +87,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     //run for real
     let monitor = zoneminder::Monitor::connect(&zm_conf, monitor_id)?;
 
+    eprintln!("Picked up zone configuration: {:?}", monitor.zone);
+
     let mut yolo = ml::YoloV4Tiny::new(
         monitor.zone.threshold.unwrap_or(0.5),
         monitor.zone.size.unwrap_or(256)
@@ -127,6 +129,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             let td = t1 - t0;
             if detections.len() > 0 {
                 println!("Inference result (took {:?}): {:#?}", td, detections);
+
+                let classes = vec![
+                    1, // person
+                    3, // car
+                    15, // bird
+                    16, // cat
+                    17, // dog
+                ];
+
+                if let Some(d) = detections.iter().filter(|d| classes.contains(&d.class_id)).next() {
+                    let description = format!("class: {} confidence: {:.1}% bounding {}x{} (area: {}) at {}x{}",
+                        d.class_id, d.confidence * 100.0, d.bounding_box.width, d.bounding_box.height,
+                        d.bounding_box.width * d.bounding_box.height, d.bounding_box.x, d.bounding_box.y
+                    );
+                    let trigger_id = monitor.zone.trigger.unwrap_or(monitor_id);
+                    zoneminder::zmtrigger::trigger_autocancel(trigger_id, "aidect", &description, 1);
+                }
             }
 
             if let Some(last_frame_completed) = last_frame_completed {

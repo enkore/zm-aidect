@@ -5,9 +5,9 @@ use opencv::types::{VectorOfMat, VectorOfRect};
 
 #[derive(Clone, Debug)]
 pub struct Detection {
-    confidence: f32,
-    class_id: i32,
-    bounding_box: Rect,
+    pub confidence: f32,
+    pub class_id: i32,
+    pub bounding_box: Rect,
 }
 
 pub struct YoloV4Tiny {

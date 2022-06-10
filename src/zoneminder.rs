@@ -12,6 +12,7 @@ use mysql::prelude::Queryable;
 use opencv::core::{CV_8UC4, Mat, MatTrait, MatTraitConst};
 
 mod shm;
+pub mod zmtrigger;
 
 #[allow(dead_code)]
 pub struct Monitor {
@@ -169,6 +170,7 @@ pub struct ZoneConfig {
     pub size: Option<u32>,
     pub threshold: Option<f32>,
     pub shape: Vec<(u32, u32)>,
+    pub trigger: Option<u32>,
 }
 
 impl ZoneConfig {
@@ -192,7 +194,7 @@ impl ZoneConfig {
                 .and_then(|v| v.trim().parse::<f32>().ok())
                 .map(|v| v / 100.0),
             size: keys.get("Size").and_then(|v| v.trim().parse::<u32>().ok()),
-
+            trigger: keys.get("Trigger").and_then(|v| v.trim().parse::<u32>().ok()),
         }
     }
 
