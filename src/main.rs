@@ -1,10 +1,10 @@
-use std::{io, slice, thread};
+use std::{fs, io, slice, thread};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind};
 use std::mem::size_of;
-use std::os::unix::fs::FileExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use libc::{c_char, c_double, time_t, timeval};
@@ -120,7 +120,9 @@ const _: [u8; 4128] = [0; size_of::<MonitorVideoStoreData>()];
 
 #[allow(dead_code)]
 struct Monitor {
+    mmap_path: String,
     file: File,
+    ino: u64,
 
     image_buffer_count: u32,
 
@@ -181,6 +183,8 @@ impl Monitor {
         let shared_images_offset = shared_images_offset + 64 - (shared_images_offset % 64);
 
         Ok(Monitor {
+            mmap_path,
+            ino: file.metadata()?.ino(),
             file,
             image_buffer_count: image_buffer_count as u32,
             trigger_data_offset,
@@ -205,17 +209,24 @@ impl Monitor {
         if shared_data.valid == 0 {
             return Err(io::Error::new(ErrorKind::Other, "Monitor shm is not valid"));
         }
+        self.check_file_stale()?;
         Ok(MonitorState {
             shared_data, trigger_data
         })
     }
 
-/*    fn read_image(&mut self, index: u32) -> io::Result<Mat> {
-
+    fn check_file_stale(&self) -> io::Result<()> {
+        // Additional sanity check, if the file-on-tmpfs is now a different file, we're definitely listening to a stranger.
+        // ZM seems to be quite good about ensuring shared_data.valid gets flipped to 0 even when zmc crashes though.
+        if fs::metadata(&self.mmap_path)?.ino() != self.ino {
+            return Err(io::Error::new(ErrorKind::Other, "Monitor shm fd is stale, must reconnect"));
+        }
+        Ok(())
     }
-*/
+
     fn read_image(&self, token: ImageToken) -> Result<Mat, Box<dyn Error>> {
         assert_eq!(1280 * 720 * 4, token.size);
+        self.check_file_stale()?;
         let mut mat = Mat::new_size_with_default((1280, 720).into(), CV_8UC4, 0.into())?;
         self.read_image_into(token, &mut mat)?;
         Ok(mat)
@@ -224,6 +235,7 @@ impl Monitor {
     fn read_image_into(&self, token: ImageToken, mat: &mut Mat) -> Result<(), Box<dyn Error>> {
         assert_eq!(1280 * 720, mat.total());
         assert_eq!(mat.typ(), CV_8UC4);
+        self.check_file_stale()?;
         let mut slice = unsafe { slice::from_raw_parts_mut(mat.ptr_mut(0)?, token.size as usize) };
         let image_offset = self.shared_images_offset as u64 + token.size as u64 * token.index as u64;
         self.file.read_exact_at(&mut slice, image_offset)?;
