@@ -24,7 +24,13 @@ pub struct YoloV4Tiny {
 impl YoloV4Tiny {
     pub fn new(confidence_threshold: f32, size: u32) -> opencv::Result<YoloV4Tiny> {
         let mut net = read_net("yolov4-tiny.weights", "yolov4-tiny.cfg", "")?;
-        net.set_preferable_target(0)?;
+        if false {
+            net.set_preferable_target(opencv::dnn::DNN_TARGET_CUDA)?;
+            net.set_preferable_backend(opencv::dnn::DNN_BACKEND_CUDA)?;
+        } else {
+            net.set_preferable_target(opencv::dnn::DNN_TARGET_CPU)?;
+            net.set_preferable_backend(opencv::dnn::DNN_BACKEND_OPENCV)?;
+        }
 
         let out_names = net.get_unconnected_out_layers_names()?;
         let out_layers = net.get_unconnected_out_layers()?;

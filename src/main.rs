@@ -10,17 +10,6 @@ mod ml;
 mod zoneminder;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() != 2 {
-        eprintln!("Usage: zm-aidect MONITOR_ID");
-        std::process::exit(1);
-    }
-    let monitor_id = args[1].trim().parse()?;
-
-    //let mut yolo = ml::YoloV4Tiny::new(0.5, 256)?;
-
-    let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
-
     /*
     // run on raw image
     let mut image_data = fs::read("imago_with_human.rgba")?;
@@ -46,23 +35,31 @@ fn main() -> Result<(), Box<dyn Error>> {
              td, detections);
 
     */
-    /*
+
+    opencv::core::set_num_threads(1);
+
     // run on pngs
+    let mut yolo = ml::YoloV4Tiny::new(0.5, 256)?;
     for file in vec![
         "19399-video-0001.png",
         "19399-video-0002.png",
         "19399-video-0003.png",
     ] {
         println!("Processing {}", file);
-        let image = opencv::imgcodecs::imread(file, IMREAD_UNCHANGED)?;
+        let image = opencv::imgcodecs::imread(file, opencv::imgcodecs::IMREAD_UNCHANGED)?;
         println!("{:#?}", image);
-
         let t0 = Instant::now();
-        let detections = yolo.infer(&image)?;
+        let mut detections = Vec::new();
+
+        let N = 80;
+        for n in 0..N {
+            detections.extend(yolo.infer(&image)?);
+        }
         let td = Instant::now() - t0;
-        println!("Inference completed in {:?}:\n{:#?}",
-                 td, detections);
-    }*/
+        println!("Inference completed in {:?}: {:#?}",
+                 td / N, detections.len());
+    }
+    return Ok(());
 
     /* image should look like
     Mat {
@@ -85,7 +82,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
      */
 
-    //run for real
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 2 {
+        eprintln!("Usage: zm-aidect MONITOR_ID");
+        std::process::exit(1);
+    }
+    let monitor_id = args[1].trim().parse()?;
+    let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
+
     let monitor = zoneminder::Monitor::connect(&zm_conf, monitor_id)?;
 
     eprintln!("Picked up zone configuration: {:?}", monitor.zone);
