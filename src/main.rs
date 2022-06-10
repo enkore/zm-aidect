@@ -222,8 +222,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         net.set_input(&blob, "", scale, mean.into())?;
 
         // run
-        let mut outs = VectorOfMat::new();
-        net.forward(&mut outs, &out_names)?;
+        let outs = {
+            let mut outs = VectorOfMat::new();
+            net.forward(&mut outs, &out_names)?;
+            outs
+        };
 
         let trun = Instant::now() - t1;
 
@@ -240,61 +243,64 @@ fn main() -> Result<(), Box<dyn Error>> {
             bounding_box: Rect,
         }
 
-        let mut detections = vec![];
-
         // Extract detections
         assert_eq!(out_layer_type, "Region");
         let image_width = image.cols() as f32;
         let image_height = image.rows() as f32;
 
         let all_detections: i32 = outs.iter().map(|out| out.rows()).sum();
-        for out in outs {
-            // Network produces output blob with a shape NxC where N is a number of
-            // detected objects and C is a number of classes + 4 where the first 4
-            // numbers are [center_x, center_y, width, height]
-            let get_bounding_box = |row: &[f32]| -> Rect {
-                let (center_x, center_y) = (row[0], row[1]);
-                let (width, height) = (row[2], row[3]);
 
-                let center_x = (center_x * image_width) as i32;
-                let center_y = (center_y * image_height) as i32;
-                let width = (width * image_width) as i32;
-                let height = (height * image_height) as i32;
+        let detections: Vec<Detection> = outs
+            .iter()
+            .map(|out| {
+                // Network produces output blob with a shape NxC where N is a number of
+                // detected objects and C is a number of classes + 4 where the first 4
+                // numbers are [center_x, center_y, width, height]
 
-                let left_edge = center_x - width / 2;
-                let top_edge = center_y - height / 2;
+                (0..out.rows())
+                    .map(move |i| {
+                        let row = out.at_row::<f32>(i).unwrap();
 
-                Rect::new(left_edge, top_edge, width, height)
-            };
+                        let get_bounding_box = |row: &[f32]| -> Rect {
+                            let (center_x, center_y) = (row[0], row[1]);
+                            let (width, height) = (row[2], row[3]);
 
-            let get_class = |row: &[f32]| {
-                let class = row[4..]
-                    .iter()
-                    //.cloned()
-                    .zip(1..) // 1.. for 1-based class index, 0.. for 0-based
-                    .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-                let (&confidence, class_id) = class.unwrap();
-                (confidence, class_id)
-            };
+                            let center_x = (center_x * image_width) as i32;
+                            let center_y = (center_y * image_height) as i32;
+                            let width = (width * image_width) as i32;
+                            let height = (height * image_height) as i32;
 
-            let rows = (0..out.rows()).map(|i| out.at_row::<f32>(i).unwrap());
+                            let left_edge = center_x - width / 2;
+                            let top_edge = center_y - height / 2;
 
-            detections.extend(
-                rows.map(|row| {
-                    let (confidence, class_id) = get_class(row);
-                    let bounding_box = get_bounding_box(row);
-                    Detection {
-                        confidence,
-                        class_id,
-                        bounding_box,
-                    }
-                })
-                .filter(|detection| detection.confidence >= confidence_threshold),
-            );
-        }
+                            Rect::new(left_edge, top_edge, width, height)
+                        };
+
+                        let get_class = |row: &[f32]| {
+                            let class = row[4..]
+                                .iter()
+                                //.cloned()
+                                .zip(1..) // 1.. for 1-based class index, 0.. for 0-based
+                                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                            let (&confidence, class_id) = class.unwrap();
+                            (confidence, class_id)
+                        };
+
+                        let (confidence, class_id) = get_class(row);
+                        let bounding_box = get_bounding_box(row);
+
+                        Detection {
+                            confidence,
+                            class_id,
+                            bounding_box,
+                        }
+                    })
+                    .filter(|detection| detection.confidence >= confidence_threshold)
+            })
+            .flatten()
+            .collect();
 
         // Perform NMS filtering
-        //let class2indices: HashMap<i32, Vec<usize>> = HashMap::new();
         let mut class2detections: HashMap<i32, Vec<&Detection>> = HashMap::new();
         for detection in &detections {
             let dets = class2detections
