@@ -11,6 +11,8 @@ mod zoneminder;
 fn main() -> Result<(), Box<dyn Error>> {
     let mut yolo = ml::YoloV4Tiny::new(0.5, 256)?;
 
+    let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
+
     /*
     // run on raw image
     let mut image_data = fs::read("imago_with_human.rgba")?;
@@ -77,8 +79,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     //run for real
     let mid = 5;
-    let max_fps = 2.0;
-    let monitor = zoneminder::Monitor::connect(mid)?;
+    let monitor = zoneminder::Monitor::connect(&zm_conf, mid)?;
+
     let mut last_read_index = monitor.image_buffer_count;
 
     //let image_size = unsafe { (*monitor.shared_data).imagesize };
@@ -114,7 +116,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             if let Some(last_frame_completed) = last_frame_completed {
                 let real_interval = (t1 - last_frame_completed).as_secs_f32();
-                let target_interval = 1.0f32 / max_fps;
+                let target_interval = 1.0f32 / monitor.max_fps;
                 let delta = target_interval - real_interval;
                 delay_sma.add_sample(delta);
 

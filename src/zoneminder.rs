@@ -7,6 +7,8 @@ use std::mem::size_of;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use libc::timeval;
+use mysql::params;
+use mysql::prelude::Queryable;
 use opencv::core::{CV_8UC4, Mat, MatTrait, MatTraitConst};
 
 mod shm;
@@ -17,6 +19,10 @@ pub struct Monitor {
     file: File,
     ino: u64,
 
+    width: u32,
+    height: u32,
+
+    pub max_fps: f32,  // XXX
     pub image_buffer_count: u32,  // XXX
 
     trigger_data_offset: usize,
@@ -26,11 +32,30 @@ pub struct Monitor {
 }
 
 impl Monitor {
-    pub fn connect(monitor_id: u32) -> io::Result<Monitor> {
-        let mmap_path = format!("/dev/shm/zm.mmap.{}", monitor_id);
-        let file = OpenOptions::new().read(true).write(true).open(&mmap_path)?;
+    pub fn connect(zm_conf: &ZoneMinderConf, monitor_id: u32) -> Result<Monitor, Box<dyn Error>> {
+        let dbmon: mysql::Row = {
+            let mut db = zm_conf.connect_db()?;
+            let dbmon = db.exec_first("SELECT Name, StorageId, Enabled, Width, Height, Colours, ImageBufferCount, AnalysisFPSLimit FROM Monitors WHERE Id = :id",
+                                      params! { "id" => monitor_id }
+            )?;
+            dbmon.unwrap()
+        };
 
-        let image_buffer_count = 3;  // needs to be retrieved from the database
+        // TODOs here:
+        // 1. get zone def from DB
+        // 2. parse zone name for settings
+        // 3. parse zone coords (see ./database)
+        // 4. crop image to bounding box of zone polygon
+        // 5. blank remaining area outside zone polygon
+
+        let image_buffer_count: usize = dbmon.get("ImageBufferCount").unwrap();
+        let width: u32 = dbmon.get("Width").unwrap();
+        let height: u32 = dbmon.get("Height").unwrap();
+        let max_fps: f32 = dbmon.get("AnalysisFPSLimit").unwrap();
+
+
+        let mmap_path = format!("{}/zm.mmap.{}", zm_conf.mmap_path, monitor_id);
+        let file = OpenOptions::new().read(true).write(true).open(&mmap_path)?;
 
         let trigger_data_offset = size_of::<shm::MonitorSharedData>();
         let videostore_data_offset = trigger_data_offset + size_of::<shm::MonitorTriggerData>();
@@ -42,7 +67,11 @@ impl Monitor {
             mmap_path,
             ino: file.metadata()?.ino(),
             file,
+
+            width, height,
             image_buffer_count: image_buffer_count as u32,
+            max_fps,
+
             trigger_data_offset,
             videostore_data_offset,
             shared_timestamps_offset,
@@ -81,15 +110,15 @@ impl Monitor {
     }
 
     pub fn read_image(&self, token: ImageToken) -> Result<Mat, Box<dyn Error>> {
-        assert_eq!(1280 * 720 * 4, token.size);
+        assert_eq!(self.width * self.height * 4, token.size);
         self.check_file_stale()?;
-        let mut mat = Mat::new_size_with_default((1280, 720).into(), CV_8UC4, 0.into())?;
+        let mut mat = Mat::new_size_with_default((self.width as i32, self.height as i32).into(), CV_8UC4, 0.into())?;
         self.read_image_into(token, &mut mat)?;
         Ok(mat)
     }
 
     pub fn read_image_into(&self, token: ImageToken, mat: &mut Mat) -> Result<(), Box<dyn Error>> {
-        assert_eq!(1280 * 720, mat.total());
+        assert_eq!(self.width * self.height, mat.total() as u32);
         assert_eq!(mat.typ(), CV_8UC4);
         self.check_file_stale()?;
         let mut slice = unsafe { slice::from_raw_parts_mut(mat.ptr_mut(0)?, token.size as usize) };
@@ -128,11 +157,12 @@ pub struct ImageToken {
 }
 
 #[derive(Debug)]
-struct ZoneMinderConf {
+pub struct ZoneMinderConf {
     db_host: String,
     db_name: String,
     db_user: String,
     db_password: String,
+    mmap_path: String,
 }
 
 impl ZoneMinderConf {
@@ -149,10 +179,11 @@ impl ZoneMinderConf {
             db_name: keys["ZM_DB_NAME"].to_string(),
             db_user: keys["ZM_DB_USER"].to_string(),
             db_password: keys["ZM_DB_PASS"].to_string(),
+            mmap_path: keys["ZM_PATH_MAP"].to_string(),
         }
     }
 
-    fn parse_default() -> io::Result<ZoneMinderConf> {
+    pub fn parse_default() -> io::Result<ZoneMinderConf> {
         let path = "/etc/zm/zm.conf";
         let contents = fs::read_to_string(path)?;
         let contents = contents + "\n" + &fs::read_dir("/etc/zm/conf.d")?
@@ -162,6 +193,17 @@ impl ZoneMinderConf {
             .fold(String::new(), |a, b| a + "\n" + &b);  // O(n**2)
 
         Ok(Self::parse_zm_conf(&contents))
+    }
+}
+
+impl ZoneMinderConf {
+    fn connect_db(&self) -> mysql::Result<mysql::Conn> {
+        let builder = mysql::OptsBuilder::new()
+            .ip_or_hostname(Some(&self.db_host))
+            .db_name(Some(&self.db_name))
+            .user(Some(&self.db_user))
+            .pass(Some(&self.db_password));
+        mysql::Conn::new(builder)
     }
 }
 
@@ -184,6 +226,8 @@ ZM_DB_USER=zmuser
 
 # ZoneMinder database password
 ZM_DB_PASS=zmpass
+
+ZM_PATH_MAP=/dev/shm
 ";
 
         let parsed = ZoneMinderConf::parse_zm_conf(conf);
@@ -191,5 +235,6 @@ ZM_DB_PASS=zmpass
         assert_eq!(parsed.db_name, "zm");
         assert_eq!(parsed.db_user, "zmuser");
         assert_eq!(parsed.db_password, "zmpass");
+        assert_eq!(parsed.mmap_path, "/dev/shm");
     }
 }
