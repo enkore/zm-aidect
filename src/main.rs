@@ -1,16 +1,18 @@
 use libc::{c_char, c_double, time_t, timeval};
 use memmap2::MmapRaw;
-use std::fs::OpenOptions;
-use std::{io, slice};
+use opencv::core::{
+    Mat, MatTraitConst, MatTraitConstManual, Point2f, Rect, Rect2f, Scalar, Vector, CV_8U,
+};
+use opencv::dnn::{blob_from_image, nms_boxes, read_net, LayerTraitConst, NetTrait, NetTraitConst};
+use opencv::imgcodecs::IMREAD_UNCHANGED;
+use opencv::types::{VectorOfMat, VectorOfRect};
 use std::collections::HashMap;
 use std::error::Error;
+use std::fs::OpenOptions;
 use std::mem::size_of;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use opencv::core::{CV_8U, Mat, MatTraitConst, MatTraitConstManual, Point2f, Rect, Rect2f, Scalar, Vector};
-use opencv::dnn::{blob_from_image, LayerTraitConst, NetTrait, NetTraitConst, nms_boxes, read_net};
-use opencv::imgcodecs::IMREAD_UNCHANGED;
-use opencv::types::{VectorOfMat, VectorOfRect};
+use std::{io, slice};
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
@@ -66,7 +68,7 @@ enum ColourType {
 #[derive(Copy, Clone, Debug)]
 #[repr(u8)]
 enum SubpixelOrder {
-    NONE = 2,  // grayscale
+    NONE = 2, // grayscale
     RGB = 6,
     BGR = 5,
     BGRA = 7,
@@ -132,11 +134,11 @@ impl Monitor {
     fn connect(monitor_id: u32) -> io::Result<Monitor> {
         let mmap_path = format!("/dev/shm/zm.mmap.{}", monitor_id);
         let file = OpenOptions::new().read(true).write(true).open(&mmap_path)?;
-        let mmap = MmapRaw::map_raw(&file)?;  // we don't actually have to mmap this at all. we can just pread from the file. its just a file, bro.
+        let mmap = MmapRaw::map_raw(&file)?; // we don't actually have to mmap this at all. we can just pread from the file. its just a file, bro.
 
         let shared_data = mmap.as_ptr(); // as *const MonitorSharedData;
 
-        let image_buffer_count = 3;  // needs to be retrieved from the database
+        let image_buffer_count = 3; // needs to be retrieved from the database
 
         let monitor = unsafe {
             let trigger_data = shared_data.add(size_of::<MonitorSharedData>());
@@ -154,7 +156,10 @@ impl Monitor {
 
             assert_eq!((*shared_data).size, size_of::<MonitorSharedData>() as u32);
             assert_eq!((*trigger_data).size, size_of::<MonitorTriggerData>() as u32);
-            assert_eq!((*videostore_data).size, size_of::<MonitorVideoStoreData>() as u32);
+            assert_eq!(
+                (*videostore_data).size,
+                size_of::<MonitorVideoStoreData>() as u32
+            );
 
             Monitor {
                 mmap,
@@ -190,7 +195,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let out_names = net.get_unconnected_out_layers_names()?;
 
-    for file in vec!("19399-video-0001.png", "19399-video-0002.png", "19399-video-0003.png") {
+    for file in vec![
+        "19399-video-0001.png",
+        "19399-video-0002.png",
+        "19399-video-0003.png",
+    ] {
         println!("Processing {}", file);
 
         let t0 = Instant::now();
@@ -262,7 +271,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let class = row[4..]
                     .iter()
                     //.cloned()
-                    .zip(1..)  // 1.. for 1-based class index, 0.. for 0-based
+                    .zip(1..) // 1.. for 1-based class index, 0.. for 0-based
                     .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
                 let (&confidence, class_id) = class.unwrap();
                 (confidence, class_id)
@@ -270,12 +279,17 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             let rows = (0..out.rows()).map(|i| out.at_row::<f32>(i).unwrap());
 
-
-            detections.extend(rows.map(|row| {
-                let (confidence, class_id) = get_class(row);
-                let bounding_box = get_bounding_box(row);
-                Detection { confidence, class_id, bounding_box }
-            }).filter(|detection| detection.confidence >= confidence_threshold)
+            detections.extend(
+                rows.map(|row| {
+                    let (confidence, class_id) = get_class(row);
+                    let bounding_box = get_bounding_box(row);
+                    Detection {
+                        confidence,
+                        class_id,
+                        bounding_box,
+                    }
+                })
+                .filter(|detection| detection.confidence >= confidence_threshold),
             );
         }
 
@@ -283,20 +297,30 @@ fn main() -> Result<(), Box<dyn Error>> {
         //let class2indices: HashMap<i32, Vec<usize>> = HashMap::new();
         let mut class2detections: HashMap<i32, Vec<&Detection>> = HashMap::new();
         for detection in &detections {
-            let dets = class2detections.entry(detection.class_id).or_insert_with(Vec::new);
+            let dets = class2detections
+                .entry(detection.class_id)
+                .or_insert_with(Vec::new);
             dets.push(&detection);
         }
 
         let mut nms_detections = vec![];
 
         for (&class_id, detections) in &class2detections {
-
-            let bounding_boxes : VectorOfRect = detections.iter().map(|det| det.bounding_box).collect();
+            let bounding_boxes: VectorOfRect =
+                detections.iter().map(|det| det.bounding_box).collect();
             let confidences: Vector<f32> = detections.iter().map(|det| det.confidence).collect();
 
             let mut chosen_indices = Vector::new();
             let nms_threshold = 0.4;
-            nms_boxes(&bounding_boxes, &confidences, confidence_threshold, nms_threshold, &mut chosen_indices, 1.0, 0)?;
+            nms_boxes(
+                &bounding_boxes,
+                &confidences,
+                confidence_threshold,
+                nms_threshold,
+                &mut chosen_indices,
+                1.0,
+                0,
+            )?;
 
             for index in chosen_indices {
                 nms_detections.push(detections[index as usize]);
@@ -316,7 +340,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 all_detections, pre_nms, nms_detections.len(),
                  nms_detections);
     }
-
 
     /*let monitor = Monitor::connect(mid)?;
     println!("Monitor shm valid: {}", monitor.valid());
