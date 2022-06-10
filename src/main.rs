@@ -90,6 +90,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut delay_sma = simple_moving_average::NoSumSMA::<_, f32, 10>::new();
 
+    let max_fps = if monitor.max_fps > 2.0 { 2.0 } else { monitor.max_fps };
+
     loop {
         //println!("Last write time: {:?}", monitor.last_write_time());
         //sleep(Duration::from_millis(500));
@@ -116,7 +118,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             if let Some(last_frame_completed) = last_frame_completed {
                 let real_interval = (t1 - last_frame_completed).as_secs_f32();
-                let target_interval = 1.0f32 / monitor.max_fps;
+                let target_interval = 1.0f32 / max_fps;
                 let delta = target_interval - real_interval;
                 delay_sma.add_sample(delta);
 
