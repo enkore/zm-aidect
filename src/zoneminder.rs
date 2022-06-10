@@ -22,6 +22,8 @@ pub struct Monitor {
     width: u32,
     height: u32,
 
+    pub zone: ZoneConfig,
+
     pub max_fps: f32,  // XXX
     pub image_buffer_count: u32,  // XXX
 
@@ -33,18 +35,23 @@ pub struct Monitor {
 
 impl Monitor {
     pub fn connect(zm_conf: &ZoneMinderConf, monitor_id: u32) -> Result<Monitor, Box<dyn Error>> {
-        let dbmon: mysql::Row = {
-            let mut db = zm_conf.connect_db()?;
-            let dbmon = db.exec_first("SELECT Name, StorageId, Enabled, Width, Height, Colours, ImageBufferCount, AnalysisFPSLimit FROM Monitors WHERE Id = :id",
-                                      params! { "id" => monitor_id }
-            )?;
-            dbmon.unwrap()
-        };
+        let mut db = zm_conf.connect_db()?;
+        let dbmon = db.exec_first("SELECT Name, StorageId, Enabled, Width, Height, Colours, ImageBufferCount, AnalysisFPSLimit FROM Monitors WHERE Id = :id",
+                                  params! { "id" => monitor_id }
+        )?;
+        let dbmon: mysql::Row = dbmon.unwrap();
+
+        let dbzone = db.exec_first("SELECT Name, Type, Coords FROM Zones WHERE MonitorId = :id AND Name LIKE \"aidect%\"",
+        params! { "id" => monitor_id }
+        )?;
+        let dbzone: mysql::Row = dbzone.unwrap();
+
+        let zone = ZoneConfig::parse(
+            &dbzone.get::<String, &str>("Name").unwrap(),
+            &dbzone.get::<String, &str>("Coords").unwrap()
+        );
 
         // TODOs here:
-        // 1. get zone def from DB
-        // 2. parse zone name for settings
-        // 3. parse zone coords (see ./database)
         // 4. crop image to bounding box of zone polygon
         // 5. blank remaining area outside zone polygon
 
@@ -68,6 +75,7 @@ impl Monitor {
             ino: file.metadata()?.ino(),
             file,
 
+            zone,
             width, height,
             image_buffer_count: image_buffer_count as u32,
             max_fps,
@@ -157,6 +165,49 @@ pub struct ImageToken {
 }
 
 #[derive(Debug)]
+pub struct ZoneConfig {
+    pub size: Option<u32>,
+    pub threshold: Option<f32>,
+    pub shape: Vec<(u32, u32)>,
+}
+
+impl ZoneConfig {
+    fn parse(name: &str, coords: &str) -> ZoneConfig {
+        let mut config = Self::parse_zone_name(name);
+        config.shape = Self::parse_zone_coords(coords);
+        config
+    }
+
+    fn parse_zone_name(zone_name: &str) -> ZoneConfig {
+        let keys: HashMap<&str, &str> = zone_name
+            .split_ascii_whitespace()
+            .skip(1)
+            .map(|item| item.split_once('='))
+            .filter_map(|x| x)
+            .collect();
+
+        ZoneConfig {
+            shape: Vec::new(),
+            threshold: keys.get("Threshold")
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .map(|v| v / 100.0),
+            size: keys.get("Size").and_then(|v| v.trim().parse::<u32>().ok()),
+
+        }
+    }
+
+    fn parse_zone_coords(coords: &str) -> Vec<(u32, u32)> {
+        let parse = |v: &str| v.trim().parse::<u32>().unwrap();
+        coords
+            .split_ascii_whitespace()
+            .map(|point| point.split_once(','))
+            .filter_map(|v| v)
+            .map(|(x, y)| (parse(x), parse(y)))
+            .collect()
+    }
+}
+
+#[derive(Debug)]
 pub struct ZoneMinderConf {
     db_host: String,
     db_name: String,
@@ -236,5 +287,30 @@ ZM_PATH_MAP=/dev/shm
         assert_eq!(parsed.db_user, "zmuser");
         assert_eq!(parsed.db_password, "zmpass");
         assert_eq!(parsed.mmap_path, "/dev/shm");
+    }
+
+    #[test]
+    fn test_parse_zone_name_basic() {
+        let zone_name = "aidect";
+        let parsed = ZoneConfig::parse_zone_name(zone_name);
+        assert_eq!(parsed.shape.len(), 0);
+        assert_eq!(parsed.threshold, None);
+        assert_eq!(parsed.size, None);
+    }
+
+    #[test]
+    fn test_parse_zone_name() {
+        let zone_name = "aidect Size=128 Threshold=50";
+        let parsed = ZoneConfig::parse_zone_name(zone_name);
+        assert_eq!(parsed.shape.len(), 0);
+        assert_eq!(parsed.threshold, Some(0.5));
+        assert_eq!(parsed.size, Some(128));
+    }
+
+    #[test]
+    fn test_parse_zone_coords() {
+        let coords = "123,56 899,41 687,425";
+        let parsed = ZoneConfig::parse_zone_coords(coords);
+        assert_eq!(parsed, vec![(123, 56), (899, 41), (687, 425)]);
     }
 }

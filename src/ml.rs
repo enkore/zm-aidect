@@ -14,13 +14,13 @@ pub struct YoloV4Tiny {
     net: Net,
     confidence_threshold: f32,
     nms_threshold: f32,
-    size: i32,
+    size: u32,
 
     out_names: Vector<String>,
 }
 
 impl YoloV4Tiny {
-    pub fn new(confidence_threshold: f32, size: i32) -> opencv::Result<YoloV4Tiny> {
+    pub fn new(confidence_threshold: f32, size: u32) -> opencv::Result<YoloV4Tiny> {
         let mut net = read_net("yolov4-tiny.weights", "yolov4-tiny.cfg", "")?;
         net.set_preferable_target(0)?;
 
@@ -39,7 +39,8 @@ impl YoloV4Tiny {
     }
 
     pub fn infer(&mut self, image: &Mat) -> opencv::Result<Vec<Detection>> {
-        let size = (self.size, self.size);
+        let size = self.size as i32;
+        let size = (size, size);
         let mean = (0.0, 0.0, 0.0);
         let blob = blob_from_image(&image, 1.0, size.into(), mean.into(), false, false, CV_8U)?;
         let scale = 1.0 / 255.0;

@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let monitor_id = args[1].trim().parse()?;
 
-    let mut yolo = ml::YoloV4Tiny::new(0.5, 256)?;
+    //let mut yolo = ml::YoloV4Tiny::new(0.5, 256)?;
 
     let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
 
@@ -86,6 +86,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     //run for real
     let monitor = zoneminder::Monitor::connect(&zm_conf, monitor_id)?;
+
+    let mut yolo = ml::YoloV4Tiny::new(
+        monitor.zone.threshold.unwrap_or(0.5),
+        monitor.zone.size.unwrap_or(256)
+    )?;
 
     let mut last_read_index = monitor.image_buffer_count;
 
