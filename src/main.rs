@@ -2,14 +2,15 @@ use libc::{c_char, c_double, time_t, timeval};
 use memmap2::MmapRaw;
 use std::fs::OpenOptions;
 use std::{io, slice};
+use std::collections::HashMap;
 use std::error::Error;
 use std::mem::size_of;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use opencv::core::{CV_8U, Mat, MatTraitConst, MatTraitConstManual, Scalar};
-use opencv::dnn::{blob_from_image, LayerTraitConst, NetTrait, NetTraitConst, read_net};
+use opencv::core::{CV_8U, Mat, MatTraitConst, MatTraitConstManual, Point2f, Rect, Rect2f, Scalar, Vector};
+use opencv::dnn::{blob_from_image, LayerTraitConst, NetTrait, NetTraitConst, nms_boxes, read_net};
 use opencv::imgcodecs::IMREAD_UNCHANGED;
-use opencv::types::VectorOfMat;
+use opencv::types::{VectorOfMat, VectorOfRect};
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
@@ -189,17 +190,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let out_names = net.get_unconnected_out_layers_names()?;
 
-    for file in vec!("19399-video-0001.png", "19399-video-0002.png", "19399-video-0003.png") {
+    for file in vec!("19399-video-0001.png" /*, "19399-video-0002.png", "19399-video-0003.png"*/ ) {
         println!("Processing {}", file);
         let image = opencv::imgcodecs::imread(file, IMREAD_UNCHANGED)?;
 
         // preprocess
-        let scale = 1.0 /*/ 255.0*/;
+        //let scale = 1.0 /*/ 255.0*/;
         let size = (192, 192);
         let mean = (0.0, 0.0, 0.0);
 
-        let blob = blob_from_image(&image, scale, size.into(), mean.into(), false, false, CV_8U)?;
+        let blob = blob_from_image(&image, 1.0, size.into(), mean.into(), false, false, CV_8U)?;
 
+        let scale = 1.0 / 255.0;
         net.set_input(&blob, "", scale, mean.into())?;
 
         // run
@@ -211,24 +213,46 @@ fn main() -> Result<(), Box<dyn Error>> {
         let out_layers = net.get_unconnected_out_layers()?;
         let out_layer_type = net.get_layer(out_layers.get(0).unwrap()).unwrap().typ();
 
+        #[derive(Debug)]
+        struct Detection {
+            confidence: f32,
+            class_id: i32,
+            bounding_box: Rect,
+        }
+
+        let mut detections = vec![];
+
+        // Extract detections
         assert_eq!(out_layer_type, "Region");
+        let image_width = image.cols() as f32;
+        let image_height = image.rows() as f32;
         for out in outs {
             // Network produces output blob with a shape NxC where N is a number of
             // detected objects and C is a number of classes + 4 where the first 4
             // numbers are [center_x, center_y, width, height]
 
-            println!("out: {:#?}", out);
-
             for row_idx in 0..out.rows() {
                 let row = out.at_row::<f32>(row_idx).unwrap();
 
-                let (center_x, center_y) = (row[0], row[1]);
-                let (width, heigt) = (row[2], row[3]);
+                //println!("  {}: {:?}", row_idx, row);
 
-                let class = row[5..]
+                let (center_x, center_y) = (row[0], row[1]);
+                let (width, height) = (row[2], row[3]);
+
+                let center_x = (center_x * image_width) as i32;
+                let center_y = (center_y * image_height) as i32;
+                let width = (width * image_width) as i32;
+                let height = (height * image_height) as i32;
+
+                let left_edge = center_x - width / 2;
+                let top_edge = center_y - height / 2;
+
+                let bounding_box : Rect = (left_edge, top_edge, width, height).into();
+
+                let class = row[4..]
                     .iter()
                     .cloned()
-                    .zip(2..)
+                    .zip(1..)  // 1.. for 1-based class index, 0.. for 0-based
                     .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
                 if let None = class {
                     continue
@@ -239,40 +263,40 @@ fn main() -> Result<(), Box<dyn Error>> {
                     continue
                 }
 
-                println!("   {}: {:?} @ {}", row_idx, confidence, class_id);
+                //println!("   {}: {:?} @ {} {:?}", row_idx, confidence, class_id, bounding_box);
+                //println!("  {}: {:?}", row_idx, &row[0..4]);
+                detections.push(Detection { confidence, class_id, bounding_box });
             }
         }
 
-        /*
-                for (size_t i = 0; i < outs.size(); ++i)
-        {
-            // Network produces output blob with a shape NxC where N is a number of
-            // detected objects and C is a number of classes + 4 where the first 4
-            // numbers are [center_x, center_y, width, height]
-            float* data = (float*)outs[i].data;
-            for (int j = 0; j < outs[i].rows; ++j, data += outs[i].cols)
-            {
-                Mat scores = outs[i].row(j).colRange(5, outs[i].cols);
-                Point classIdPoint;
-                double confidence;
-                minMaxLoc(scores, 0, &confidence, 0, &classIdPoint);
-                if (confidence > confThreshold)
-                {
-                    int centerX = (int)(data[0] * frame.cols);
-                    int centerY = (int)(data[1] * frame.rows);
-                    int width = (int)(data[2] * frame.cols);
-                    int height = (int)(data[3] * frame.rows);
-                    int left = centerX - width / 2;
-                    int top = centerY - height / 2;
-
-                    classIds.push_back(classIdPoint.x);
-                    confidences.push_back((float)confidence);
-                    boxes.push_back(Rect(left, top, width, height));
-                }
-            }
+        // Perform NMS filtering
+        //let class2indices: HashMap<i32, Vec<usize>> = HashMap::new();
+        let mut class2detections: HashMap<i32, Vec<&Detection>> = HashMap::new();
+        for detection in &detections {
+            let dets = class2detections.entry(detection.class_id).or_insert_with(Vec::new);
+            dets.push(&detection);
         }
-         */
 
+        let mut nms_detections = vec![];
+
+        for (&class_id, detections) in &class2detections {
+
+            let bounding_boxes : VectorOfRect = detections.iter().map(|det| det.bounding_box).collect();
+            let confidences: Vector<f32> = detections.iter().map(|det| det.confidence).collect();
+
+            let mut chosen_indices = Vector::new();
+            let nms_threshold = 0.4;
+            nms_boxes(&bounding_boxes, &confidences, confidence_threshold, nms_threshold, &mut chosen_indices, 1.0, 0)?;
+
+            for index in chosen_indices {
+                nms_detections.push(detections[index as usize]);
+            }
+
+            // bboxes: &core::Vector<core::Rect>, scores: &core::Vector<f32>, score_threshold: f32, nms_threshold: f32, indices: &mut core::Vector<i32>, eta: f32, top_k: i32
+            //nms_boxes()
+        }
+
+        println!("{:#?}", nms_detections);
     }
 
 
