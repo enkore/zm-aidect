@@ -9,6 +9,13 @@ mod ml;
 mod zoneminder;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 2 {
+        eprintln!("Usage: zm-aidect MONITOR_ID");
+        std::process::exit(1);
+    }
+    let monitor_id = args[1].trim().parse()?;
+
     let mut yolo = ml::YoloV4Tiny::new(0.5, 256)?;
 
     let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
@@ -78,8 +85,7 @@ fn main() -> Result<(), Box<dyn Error>> {
      */
 
     //run for real
-    let mid = 5;
-    let monitor = zoneminder::Monitor::connect(&zm_conf, mid)?;
+    let monitor = zoneminder::Monitor::connect(&zm_conf, monitor_id)?;
 
     let mut last_read_index = monitor.image_buffer_count;
 
@@ -114,7 +120,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             let detections = yolo.infer(&rgb_image)?;
             let t1 = Instant::now();
             let td = t1 - t0;
-            println!("{:?}: Inference completed in {:?}: {:#?}", SystemTime::now(), td, detections);
+            if detections.len() > 0 {
+                println!("Inference result (took {:?}): {:#?}", td, detections);
+            }
 
             if let Some(last_frame_completed) = last_frame_completed {
                 let real_interval = (t1 - last_frame_completed).as_secs_f32();
