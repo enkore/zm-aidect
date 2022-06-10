@@ -3,9 +3,9 @@ use memmap2::MmapRaw;
 use opencv::core::{
     Mat, MatTraitConst, MatTraitConstManual, Point2f, Rect, Rect2f, Scalar, Vector, CV_8U,
 };
-use opencv::dnn::{blob_from_image, nms_boxes, read_net, LayerTraitConst, NetTrait, NetTraitConst};
+use opencv::dnn::{blob_from_image, nms_boxes, read_net, LayerTraitConst, NetTrait, NetTraitConst, Net};
 use opencv::imgcodecs::IMREAD_UNCHANGED;
-use opencv::types::{VectorOfMat, VectorOfRect};
+use opencv::types::{VectorOfMat, VectorOfRect, VectorOfString};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::OpenOptions;
@@ -185,70 +185,57 @@ impl Monitor {
     }
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let mid = 5;
+#[derive(Clone, Debug)]
+struct Detection {
+    confidence: f32,
+    class_id: i32,
+    bounding_box: Rect,
+}
 
-    let confidence_threshold = 0.5;
+struct YoloV4Tiny {
+    net: Net,
+    confidence_threshold: f32,
+    nms_threshold: f32,
+    size: i32,
 
-    let mut net = read_net("yolov4-tiny.weights", "yolov4-tiny.cfg", "")?;
-    net.set_preferable_target(0)?;
+    out_names: Vector<String>,
+    out_layers: Vector<i32>,
+}
 
-    let out_names = net.get_unconnected_out_layers_names()?;
+impl YoloV4Tiny {
+    fn new(confidence_threshold: f32, size: i32) -> opencv::Result<YoloV4Tiny> {
+        let mut net = read_net("yolov4-tiny.weights", "yolov4-tiny.cfg", "")?;
+        net.set_preferable_target(0)?;
 
-    for file in vec![
-        "19399-video-0001.png",
-        "19399-video-0002.png",
-        "19399-video-0003.png",
-    ] {
-        println!("Processing {}", file);
+        let out_names = net.get_unconnected_out_layers_names()?;
+        let out_layers = net.get_unconnected_out_layers()?;
+        let out_layer_type = net.get_layer(out_layers.get(0).unwrap()).unwrap().typ();
+        assert_eq!(out_layer_type, "Region");
 
-        let t0 = Instant::now();
+        Ok(YoloV4Tiny {
+            net,
+            out_names, out_layers,
+            confidence_threshold: confidence_threshold,
+            nms_threshold: 0.4,
+            size: size,
+        })
+    }
 
-        let image = opencv::imgcodecs::imread(file, IMREAD_UNCHANGED)?;
-        println!("Image dims: {:?}", image);
-
-        let tload = Instant::now();
-
-        // preprocess
-        //let scale = 1.0 /*/ 255.0*/;
-        let size = (256, 256);
+    fn infer(&mut self, image: &Mat) -> opencv::Result<Vec<Detection>> {
+        let size = (self.size, self.size);
         let mean = (0.0, 0.0, 0.0);
-
-        let t1 = Instant::now();
         let blob = blob_from_image(&image, 1.0, size.into(), mean.into(), false, false, CV_8U)?;
-        println!("Blob dims: {:?}", blob);
-
         let scale = 1.0 / 255.0;
-        net.set_input(&blob, "", scale, mean.into())?;
+        self.net.set_input(&blob, "", scale, mean.into())?;
 
-        // run
         let outs = {
             let mut outs = VectorOfMat::new();
-            net.forward(&mut outs, &out_names)?;
+            self.net.forward(&mut outs, &self.out_names)?;
             outs
         };
 
-        let trun = Instant::now() - t1;
-
-        // postprocess
-        let t2 = Instant::now();
-
-        let out_layers = net.get_unconnected_out_layers()?;
-        let out_layer_type = net.get_layer(out_layers.get(0).unwrap()).unwrap().typ();
-
-        #[derive(Debug)]
-        struct Detection {
-            confidence: f32,
-            class_id: i32,
-            bounding_box: Rect,
-        }
-
-        // Extract detections
-        assert_eq!(out_layer_type, "Region");
         let image_width = image.cols() as f32;
         let image_height = image.rows() as f32;
-
-        let all_detections: i32 = outs.iter().map(|out| out.rows()).sum();
 
         let detections: Vec<Detection> = outs
             .iter()
@@ -295,7 +282,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             bounding_box,
                         }
                     })
-                    .filter(|detection| detection.confidence >= confidence_threshold)
+                    .filter(|detection| detection.confidence >= self.confidence_threshold)
             })
             .flatten()
             .collect();
@@ -315,36 +302,44 @@ fn main() -> Result<(), Box<dyn Error>> {
             let bounding_boxes: VectorOfRect =
                 detections.iter().map(|det| det.bounding_box).collect();
             let confidences: Vector<f32> = detections.iter().map(|det| det.confidence).collect();
-
             let mut chosen_indices = Vector::new();
-            let nms_threshold = 0.4;
             nms_boxes(
                 &bounding_boxes,
                 &confidences,
-                confidence_threshold,
-                nms_threshold,
+                self.confidence_threshold,
+                self.nms_threshold,
                 &mut chosen_indices,
                 1.0,
                 0,
             )?;
 
             for index in chosen_indices {
-                nms_detections.push(detections[index as usize]);
+                nms_detections.push(detections[index as usize].clone());
             }
-
-            // bboxes: &core::Vector<core::Rect>, scores: &core::Vector<f32>, score_threshold: f32, nms_threshold: f32, indices: &mut core::Vector<i32>, eta: f32, top_k: i32
-            //nms_boxes()
         }
 
-        let tpost = Instant::now() - t2;
+        Ok(nms_detections)
+    }
+}
 
-        let pre_nms = detections.len();
+fn main() -> Result<(), Box<dyn Error>> {
+    let mid = 5;
 
+    let mut yolo = YoloV4Tiny::new(0.5, 256)?;
+
+    for file in vec![
+        "19399-video-0001.png",
+        "19399-video-0002.png",
+        "19399-video-0003.png",
+    ] {
+        println!("Processing {}", file);
+        let image = opencv::imgcodecs::imread(file, IMREAD_UNCHANGED)?;
+
+        let t0 = Instant::now();
+        let detections = yolo.infer(&image)?;
         let td = Instant::now() - t0;
-        println!("Inference completed in {:?} (load {:?}, net runtime {:?}, post {:?}) {} -> {} -> {}:\n{:#?}",
-                 td, tload - t0, trun, tpost,
-                all_detections, pre_nms, nms_detections.len(),
-                 nms_detections);
+        println!("Inference completed in {:?}:\n{:#?}",
+                 td, detections);
     }
 
     /*let monitor = Monitor::connect(mid)?;
