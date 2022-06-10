@@ -243,12 +243,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             // Network produces output blob with a shape NxC where N is a number of
             // detected objects and C is a number of classes + 4 where the first 4
             // numbers are [center_x, center_y, width, height]
-
-            for row_idx in 0..out.rows() {
-                let row = out.at_row::<f32>(row_idx).unwrap();
-
-                //println!("  {}: {:?}", row_idx, row);
-
+            let get_bounding_box = |row: &[f32]| -> Rect {
                 let (center_x, center_y) = (row[0], row[1]);
                 let (width, height) = (row[2], row[3]);
 
@@ -260,23 +255,28 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let left_edge = center_x - width / 2;
                 let top_edge = center_y - height / 2;
 
-                let bounding_box : Rect = (left_edge, top_edge, width, height).into();
+                Rect::new(left_edge, top_edge, width, height)
+            };
 
+            let get_class = |row: &[f32]| {
                 let class = row[4..]
                     .iter()
                     //.cloned()
                     .zip(1..)  // 1.. for 1-based class index, 0.. for 0-based
                     .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
                 let (&confidence, class_id) = class.unwrap();
+                (confidence, class_id)
+            };
 
-                if confidence < confidence_threshold {
-                    continue
-                }
+            let rows = (0..out.rows()).map(|i| out.at_row::<f32>(i).unwrap());
 
-                //println!("   {}: {:?} @ {} {:?}", row_idx, confidence, class_id, bounding_box);
-                //println!("  {}: {:?}", row_idx, &row[0..4]);
-                detections.push(Detection { confidence, class_id, bounding_box });
-            }
+
+            detections.extend(rows.map(|row| {
+                let (confidence, class_id) = get_class(row);
+                let bounding_box = get_bounding_box(row);
+                Detection { confidence, class_id, bounding_box }
+            }).filter(|detection| detection.confidence >= confidence_threshold)
+            );
         }
 
         // Perform NMS filtering
