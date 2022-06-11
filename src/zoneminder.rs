@@ -141,6 +141,41 @@ impl Monitor {
         self.file.read_exact_at(&mut slice, image_offset)?;
         Ok(())
     }
+
+    pub fn stream_images(&self) -> ImageStream {
+        ImageStream {
+            monitor: self,
+            last_read_index: self.image_buffer_count,
+        }
+
+    }
+}
+
+pub struct ImageStream<'mon> {
+    monitor: &'mon Monitor,
+    last_read_index: u32,
+}
+
+impl ImageStream<'_> {
+    fn wait_for_image(&mut self) -> Result<Mat, Box<dyn Error>> {
+        loop {
+            let state = self.monitor.read()?;
+            let last_write_index = state.last_write_index();
+            if last_write_index != self.last_read_index && last_write_index != self.monitor.image_buffer_count {
+                self.last_read_index = last_write_index;
+                return self.monitor.read_image(state.last_image_token());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+impl Iterator for ImageStream<'_> {
+    type Item = Result<Mat, Box<dyn Error>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(self.wait_for_image())
+    }
 }
 
 pub struct MonitorState {

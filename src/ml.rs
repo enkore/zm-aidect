@@ -50,9 +50,9 @@ pub struct YoloV4Tiny {
 }
 
 impl YoloV4Tiny {
-    pub fn new(confidence_threshold: f32, size: u32) -> opencv::Result<YoloV4Tiny> {
+    pub fn new(confidence_threshold: f32, size: u32, use_cuda: bool) -> opencv::Result<YoloV4Tiny> {
         let mut net = read_net("yolov4-tiny.weights", "yolov4-tiny.cfg", "")?;
-        if false {
+        if use_cuda {
             net.set_preferable_target(opencv::dnn::DNN_TARGET_CUDA)?;
             net.set_preferable_backend(opencv::dnn::DNN_BACKEND_CUDA)?;
         } else {
@@ -67,10 +67,10 @@ impl YoloV4Tiny {
 
         Ok(YoloV4Tiny {
             net,
+            size,
             out_names,
-            confidence_threshold: confidence_threshold,
+            confidence_threshold,
             nms_threshold: 0.4,
-            size: size,
         })
     }
 

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::error::Error;
 use std::time::{Duration, Instant};
 
@@ -111,22 +111,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut yolo = ml::YoloV4Tiny::new(
         monitor.zone.threshold.unwrap_or(0.5),
         monitor.zone.size.unwrap_or(256),
+        false,
     )?;
 
-    let mut last_read_index = monitor.image_buffer_count;
-
-    //let image_size = unsafe { (*monitor.shared_data).imagesize };
-    //println!("Image size is claimed to be: {}", image_size);
-
-    let mut last_frame_completed: Option<Instant> = None;
-
-    let mut delay_sma = simple_moving_average::NoSumSMA::<_, f32, 10>::new();
-
-    let max_fps = monitor
-        .zone
-        .fps
+    let max_fps = monitor.zone.fps
         .map(|v| v as f32)
         .unwrap_or(monitor.max_fps);
+    let mut pacemaker = Pacemaker::new(max_fps);
 
     let classes: HashMap<i32, &str> = [
         (1, "Human"), // person
@@ -136,79 +127,87 @@ fn main() -> Result<(), Box<dyn Error>> {
         (17, "Dog"),  // dog
     ].into();
 
-    loop {
-        //println!("Last write time: {:?}", monitor.last_write_time());
-        //sleep(Duration::from_millis(500));
+    for image in monitor.stream_images() {
+        let image = image?;
+        // TODO: blank remaining area outside zone polygon
+        let image = Mat::roi(&image, bounding_box)?;
 
-        let state = monitor.read()?;
+        let mut rgb_image = Mat::default();
+        cvt_color(&image, &mut rgb_image, COLOR_RGBA2RGB, 0)?;
 
-        let last_write_index = state.last_write_index();
-        if last_write_index != last_read_index && last_write_index != monitor.image_buffer_count {
-            //let timestamp = unsafe { *monitor.shared_timestamps.offset(last_write_index as isize) };
-            //let timestamp = UNIX_EPOCH + Duration::from_secs(timestamp.tv_sec as u64) + Duration::from_micros(timestamp.tv_usec as u64);
-            //println!("New image available at index {}, timestamp {:?}", last_write_index, timestamp);
-            last_read_index = last_write_index;
+        let t0 = Instant::now();
+        let detections = yolo.infer(&rgb_image)?;
+        let t1 = Instant::now();
+        let td = t1 - t0;
 
-            let image = monitor.read_image(state.last_image_token())?;
-            // TODO: blank remaining area outside zone polygon
-            let image = Mat::roi(&image, bounding_box)?;
+        let detections: Vec<&Detection> = detections
+            .iter()
+            .filter(|d| classes.contains_key(&d.class_id))
+            .filter(|d| {
+                (d.bounding_box.width * d.bounding_box.height) as u32
+                    > monitor.zone.min_area.unwrap_or(0)
+            })
+            .collect();
 
-            let mut rgb_image = Mat::default();
-            cvt_color(&image, &mut rgb_image, COLOR_RGBA2RGB, 0)?;
+        if detections.len() > 0 {
+            println!("{}: Inference result (took {:?}): {:?}", monitor_id, td, detections);
 
-            let t0 = Instant::now();
-            let detections = yolo.infer(&rgb_image)?;
-            let t1 = Instant::now();
-            let td = t1 - t0;
-
-            let detections: Vec<&Detection> = detections
-                .iter()
-                .filter(|d| classes.contains_key(&d.class_id))
-                .filter(|d| {
-                    (d.bounding_box.width * d.bounding_box.height) as u32
-                        > monitor.zone.min_area.unwrap_or(0)
-                })
-                .collect();
-
-            if detections.len() > 0 {
-                println!("{}: Inference result (took {:?}): {:?}", monitor_id, td, detections);
-
-                let d = detections.iter().max_by_key(|d| (d.confidence * 1000.0) as u32).unwrap();  // generally there will only be one anyway
-                let description = format!(
-                    "{} ({:.1}%) {}x{} (={}) at {}x{}",
-                    classes[&d.class_id],
-                    d.confidence * 100.0,
-                    d.bounding_box.width,
-                    d.bounding_box.height,
-                    d.bounding_box.width * d.bounding_box.height,
-                    d.bounding_box.x + bounding_box.x,
-                    d.bounding_box.y + bounding_box.y,
-                );
-                let trigger_id = monitor.zone.trigger.unwrap_or(monitor_id);
-                if let Err(e) =
-                    zoneminder::zmtrigger::trigger_autocancel(trigger_id, "aidect", &description, 1)
-                {
-                    eprintln!("{}: Failed to trigger zm: {}", monitor_id, e);
-                }
+            let d = detections.iter().max_by_key(|d| (d.confidence * 1000.0) as u32).unwrap();  // generally there will only be one anyway
+            let description = format!(
+                "{} ({:.1}%) {}x{} (={}) at {}x{}",
+                classes[&d.class_id],
+                d.confidence * 100.0,
+                d.bounding_box.width,
+                d.bounding_box.height,
+                d.bounding_box.width * d.bounding_box.height,
+                d.bounding_box.x + bounding_box.x,
+                d.bounding_box.y + bounding_box.y,
+            );
+            let trigger_id = monitor.zone.trigger.unwrap_or(monitor_id);
+            if let Err(e) = zoneminder::zmtrigger::trigger_autocancel(trigger_id, "aidect", &description, 1) {
+                eprintln!("{}: Failed to trigger zm: {}", monitor_id, e);
             }
-
-            if let Some(last_frame_completed) = last_frame_completed {
-                let real_interval = (t1 - last_frame_completed).as_secs_f32();
-                let target_interval = 1.0f32 / max_fps;
-                let delta = target_interval - real_interval;
-                delay_sma.add_sample(delta);
-
-                let sleep_time = delay_sma.get_average();
-                if sleep_time > 0.0 {
-                    std::thread::sleep(Duration::from_secs_f32(sleep_time));
-                } else if td.as_secs_f32() > target_interval {
-                    eprintln!(
-                        "{}: Cannot keep up with max-analysis-fps (inference taking {:?})!",
-                        monitor_id, td,
-                    );
-                }
-            }
-            last_frame_completed = Some(Instant::now());
         }
+
+        if td.as_secs_f32() > pacemaker.target_interval {
+            eprintln!(
+                "{}: Cannot keep up with max-analysis-fps (inference taking {:?})!",
+                monitor_id, td,
+            );
+        }
+
+        pacemaker.tick();
+    }
+    Ok(())
+}
+
+struct Pacemaker {
+    target_interval: f32,
+    last_tick: Option<Instant>,
+    avg: simple_moving_average::NoSumSMA<f32, f32, 10>,
+}
+
+impl Pacemaker {
+    fn new(frequency: f32) -> Pacemaker {
+        Pacemaker {
+            target_interval: 1.0f32 / frequency,
+            last_tick: None,
+            avg: simple_moving_average::NoSumSMA::new(),
+        }
+    }
+
+    fn tick(&mut self) {
+        let now = Instant::now();
+        if let Some(last_iteration) = self.last_tick {
+            let real_interval = (now - last_iteration).as_secs_f32();
+            let delta = self.target_interval - real_interval;
+            self.avg.add_sample(delta);
+
+            let sleep_time = self.avg.get_average();
+            if sleep_time > 0.0 {
+                std::thread::sleep(Duration::from_secs_f32(sleep_time));
+            }
+        }
+        self.last_tick = Some(now);
     }
 }
