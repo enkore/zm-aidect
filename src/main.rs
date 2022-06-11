@@ -99,10 +99,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let monitor = zoneminder::Monitor::connect(&zm_conf, monitor_id)?;
 
-    eprintln!("Picked up zone configuration: {:?}", monitor.zone);
+    eprintln!("{}: Picked up zone configuration: {:?}", monitor_id, monitor.zone);
 
     let bounding_box = monitor.zone.shape.bounding_box();
-    eprintln!("Picked up zone bounds {:?}", bounding_box);
+    eprintln!("{}: Picked up zone bounds {:?}", monitor_id, bounding_box);
 
     let mut yolo = ml::YoloV4Tiny::new(
         monitor.zone.threshold.unwrap_or(0.5),
@@ -150,7 +150,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let td = t1 - t0;
 
             if detections.len() > 0 {
-                println!("Inference result (took {:?}): {:#?}", td, detections);
+                println!("{}: Inference result (took {:?}): {:?}", monitor_id, td, detections);
 
                 let classes: HashMap<i32, &str> = [
                     (1, "Human"), // person
@@ -183,7 +183,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         &description,
                         1,
                     ) {
-                        eprintln!("Failed to trigger zm: {}", e);
+                        eprintln!("{}: Failed to trigger zm: {}", monitor_id, e);
                     }
                 }
             }
@@ -199,8 +199,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     std::thread::sleep(Duration::from_secs_f32(sleep_time));
                 } else if td.as_secs_f32() > target_interval {
                     eprintln!(
-                        "Cannot keep up with max-analysis-fps (inference taking {:?})!",
-                        td
+                        "{}: Cannot keep up with max-analysis-fps (inference taking {:?})!",
+                        monitor_id, td,
                     );
                 }
             }
