@@ -197,6 +197,7 @@ pub struct ZoneConfig {
     pub shape: ZoneShape,
     pub trigger: Option<u32>,
     pub fps: Option<u32>,
+    pub min_area: Option<u32>,
 }
 
 impl ZoneConfig {
@@ -225,6 +226,7 @@ impl ZoneConfig {
             size: get_int("Size"),
             trigger: get_int("Trigger"),
             fps: get_int("FPS"),
+            min_area: get_int("MinArea"),
         }
     }
 

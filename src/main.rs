@@ -164,6 +164,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 if let Some(d) = detections
                     .iter()
                     .filter(|d| classes.contains_key(&d.class_id))
+                    .filter(|d| (d.bounding_box.width * d.bounding_box.height) as u32 > monitor.zone.min_area.unwrap_or(0))
                     .next()
                 {
                     let description = format!(

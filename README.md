@@ -56,7 +56,11 @@ adding them to the zone's name:
 * Classes=1,2,3,... sets which classes trigger detection. By default only humans and cars will be detected.
   See class names. Because the length of the zone name is limited, we can't use human-readable names here.
   The default is: 1,3,15,16,17 (persons, cars, birds, cats and dogs).
-* FPS=XX sets the maximum analysis fps for zm-aidect and zm-aidect alone. The default is the analysis FPS set in the monitor.
+* MinArea=51600 filters detections by their area. In triggered events the area is indicated "aidect: Human (51.1%) 90x177 (=**15930**) at 440x385".
+  Some things can persistently trigger medium-to-high confidence detections and filtering by area is a simple way to get rid of these.
+  Alternatively, consider having the aidect zone not cover those patterns if they are static.
+* FPS=XX sets the maximum analysis fps for zm-aidect and zm-aidect alone. The default is the analysis FPS set in the monitor,
+  and if that isn't set zm-aidect will, just like ZoneMinder's own analysis, run as fast as possible to try and catch them all.
 * Trigger=XX sets an alternative monitor ID for triggering. This is useful when evaluating zm-aidect, because
   you can attach zm-aidect to your normal substream monitor, but trigger events on a secondary nodect monitor so that
   you can compare whatever method you normally use and zm-aidect, without having to have two monitors decode
@@ -68,14 +72,24 @@ For example:
 
 Multiple "aidect" zones should not be added to a single monitor and aren't supported.
 
+Changing settings in ZoneMinder will be reflected within a few seconds in zm-aidect; you don't need to systemctl-restart
+it manually.
+
 Making the zone smaller does not speed things up (except if it's really small), but can improve detection accuracy.
 Note that the zone is embedded in a rectangular region, meaning that the ML model will see a rectangle fitting around
 the zone; having long protrusions thus reduces effectiveness. Overall, the ML model used here is good enough even
 for full-screen detection on very wide angle cameras. Don't sweat it. Zone placement and size matters A LOT less with
 zm-aidect than it does with traditional motion detection.
 
+### Testing changes
+
 You can also run `zm-aidect --test <MONITOR-ID>`, which will go through the startup, perform a single inference
-to ensure the process works, trigger an event, and exit. This can be used to confirm that the settings are applied as wanted.
+to ensure the process works, trigger an event, and exit. Some diagnostics will be printed as well, like if and which
+hardware accelerator is used by zm-aidect. This can be used to confirm that the settings are applied as wanted.
+
+Run `zm-aidect --event=12345` to have zm-aidect analyze the given event as-if it were watching live, using the current settings
+of the monitor the event belongs to. Detections will be printed,  no triggering takes place.
+This can be used to verify that aidect does (not) detect something you (don't) want to detect without getting up.
 
 ## Performance
 
@@ -139,9 +153,9 @@ for lightly threaded workloads on Ryzen means that less than 50 % of the power g
 ```
 Ryzen R5 5600X 1T		14 Hz	50 W	  = 0.3 Hz/W
 Ryzen R5 5600X All-core		58 Hz	83 W	  = 0.7 Hz/W
-nVidia 1080 Ti			455 Hz	180+50 W  = 2 Hz/W    3x better power efficiency, even including
-                                                                   CPU power on the inefficient Zen 3 Ryzen
-                                                              8x higher performance
+nVidia 1080 Ti			455 Hz	180+50 W  = 2 Hz/W
+ - 3x better power efficiency, even including CPU power on the inefficient Zen 3 Ryzen
+ - 8x higher performance
 ```
 
 Another way to look at power efficiency is to consider the rise above idle. Because the 1080 Ti is much better at
