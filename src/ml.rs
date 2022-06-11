@@ -32,13 +32,13 @@ impl Hash for Detection {
 
 impl PartialEq<Self> for Detection {
     fn eq(&self, other: &Self) -> bool {
-        self.confidence_pct() == other.confidence_pct() && self.class_id == other.class_id && self.bounding_box == other.bounding_box
+        self.confidence_pct() == other.confidence_pct()
+            && self.class_id == other.class_id
+            && self.bounding_box == other.bounding_box
     }
 }
 
-impl Eq for Detection {
-
-}
+impl Eq for Detection {}
 
 pub struct YoloV4Tiny {
     net: Net,

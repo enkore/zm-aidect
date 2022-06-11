@@ -9,6 +9,7 @@ use simple_moving_average::SMA;
 mod ml;
 mod zoneminder;
 
+use ml::Detection;
 use zoneminder::Bounding;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -99,7 +100,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let monitor = zoneminder::Monitor::connect(&zm_conf, monitor_id)?;
 
-    eprintln!("{}: Picked up zone configuration: {:?}", monitor_id, monitor.zone);
+    eprintln!(
+        "{}: Picked up zone configuration: {:?}",
+        monitor_id, monitor.zone
+    );
 
     let bounding_box = monitor.zone.shape.bounding_box();
     eprintln!("{}: Picked up zone bounds {:?}", monitor_id, bounding_box);
@@ -123,6 +127,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         .fps
         .map(|v| v as f32)
         .unwrap_or(monitor.max_fps);
+
+    let classes: HashMap<i32, &str> = [
+        (1, "Human"), // person
+        (3, "Car"),   // car
+        (15, "Bird"), // bird
+        (16, "Cat"),  // cat
+        (17, "Dog"),  // dog
+    ].into();
 
     loop {
         //println!("Last write time: {:?}", monitor.last_write_time());
@@ -149,43 +161,34 @@ fn main() -> Result<(), Box<dyn Error>> {
             let t1 = Instant::now();
             let td = t1 - t0;
 
+            let detections: Vec<&Detection> = detections
+                .iter()
+                .filter(|d| classes.contains_key(&d.class_id))
+                .filter(|d| {
+                    (d.bounding_box.width * d.bounding_box.height) as u32
+                        > monitor.zone.min_area.unwrap_or(0)
+                })
+                .collect();
+
             if detections.len() > 0 {
                 println!("{}: Inference result (took {:?}): {:?}", monitor_id, td, detections);
 
-                let classes: HashMap<i32, &str> = [
-                    (1, "Human"), // person
-                    (3, "Car"),   // car
-                    (15, "Bird"), // bird
-                    (16, "Cat"),  // cat
-                    (17, "Dog"),  // dog
-                ]
-                .into();
-
-                if let Some(d) = detections
-                    .iter()
-                    .filter(|d| classes.contains_key(&d.class_id))
-                    .filter(|d| (d.bounding_box.width * d.bounding_box.height) as u32 > monitor.zone.min_area.unwrap_or(0))
-                    .next()
+                let d = detections.iter().max_by_key(|d| (d.confidence * 1000.0) as u32).unwrap();  // generally there will only be one anyway
+                let description = format!(
+                    "{} ({:.1}%) {}x{} (={}) at {}x{}",
+                    classes[&d.class_id],
+                    d.confidence * 100.0,
+                    d.bounding_box.width,
+                    d.bounding_box.height,
+                    d.bounding_box.width * d.bounding_box.height,
+                    d.bounding_box.x + bounding_box.x,
+                    d.bounding_box.y + bounding_box.y,
+                );
+                let trigger_id = monitor.zone.trigger.unwrap_or(monitor_id);
+                if let Err(e) =
+                    zoneminder::zmtrigger::trigger_autocancel(trigger_id, "aidect", &description, 1)
                 {
-                    let description = format!(
-                        "{} ({:.1}%) {}x{} (={}) at {}x{}",
-                        classes[&d.class_id],
-                        d.confidence * 100.0,
-                        d.bounding_box.width,
-                        d.bounding_box.height,
-                        d.bounding_box.width * d.bounding_box.height,
-                        d.bounding_box.x + bounding_box.x,
-                        d.bounding_box.y + bounding_box.y,
-                    );
-                    let trigger_id = monitor.zone.trigger.unwrap_or(monitor_id);
-                    if let Err(e) = zoneminder::zmtrigger::trigger_autocancel(
-                        trigger_id,
-                        "aidect",
-                        &description,
-                        1,
-                    ) {
-                        eprintln!("{}: Failed to trigger zm: {}", monitor_id, e);
-                    }
+                    eprintln!("{}: Failed to trigger zm: {}", monitor_id, e);
                 }
             }
 

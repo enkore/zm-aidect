@@ -1,7 +1,7 @@
 use libc::timeval;
 use mysql::params;
 use mysql::prelude::Queryable;
-use opencv::core::{Mat, MatTrait, MatTraitConst, CV_8UC4, Rect};
+use opencv::core::{Mat, MatTrait, MatTraitConst, Rect, CV_8UC4};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::{File, OpenOptions};
@@ -186,7 +186,12 @@ impl Bounding for ZoneShape {
 
         let width = max_x - min_x;
         let height = max_y - min_y;
-        Rect { x: min_x, y: min_y, width, height }
+        Rect {
+            x: min_x,
+            y: min_y,
+            width,
+            height,
+        }
     }
 }
 
