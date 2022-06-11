@@ -9,6 +9,8 @@ use simple_moving_average::SMA;
 mod ml;
 mod zoneminder;
 
+use zoneminder::Bounding;
+
 fn main() -> Result<(), Box<dyn Error>> {
     /*
     // run on raw image
@@ -39,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     //opencv::core::set_num_threads(1);
 
     // run on pngs
-    if false {
+    /* {
         let mut yolo = ml::YoloV4Tiny::new(0.5, 256)?;
         for file in vec![
             "19399-video-0001.png",
@@ -64,7 +66,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                      td / n, detections);
         }
         return Ok(());
-    }
+    }*/
 
     /* image should look like
     Mat {
@@ -98,6 +100,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let monitor = zoneminder::Monitor::connect(&zm_conf, monitor_id)?;
 
     eprintln!("Picked up zone configuration: {:?}", monitor.zone);
+
+    let bounding_box = monitor.zone.shape.bounding_box();
+    eprintln!("Picked up zone bounds {:?}", bounding_box);
 
     let mut yolo = ml::YoloV4Tiny::new(
         monitor.zone.threshold.unwrap_or(0.5),
@@ -133,6 +138,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             last_read_index = last_write_index;
 
             let image = monitor.read_image(state.last_image_token())?;
+            // TODO: blank remaining area outside zone polygon
+            let image = Mat::roi(&image, bounding_box)?;
 
             let mut rgb_image = Mat::default();
             cvt_color(&image, &mut rgb_image, COLOR_RGBA2RGB, 0)?;
@@ -166,8 +173,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                         d.bounding_box.width,
                         d.bounding_box.height,
                         d.bounding_box.width * d.bounding_box.height,
-                        d.bounding_box.x,
-                        d.bounding_box.y
+                        d.bounding_box.x + bounding_box.x,
+                        d.bounding_box.y + bounding_box.y,
                     );
                     let trigger_id = monitor.zone.trigger.unwrap_or(monitor_id);
                     if let Err(e) = zoneminder::zmtrigger::trigger_autocancel(
@@ -198,8 +205,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             last_frame_completed = Some(Instant::now());
-
-            //std::fs::write(format!("/tmp/imago-{:?}", timestamp), image_data)?;
         }
     }
 }

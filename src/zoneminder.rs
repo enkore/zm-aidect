@@ -1,7 +1,7 @@
 use libc::timeval;
 use mysql::params;
 use mysql::prelude::Queryable;
-use opencv::core::{Mat, MatTrait, MatTraitConst, CV_8UC4};
+use opencv::core::{Mat, MatTrait, MatTraitConst, CV_8UC4, Rect};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::{File, OpenOptions};
@@ -52,10 +52,6 @@ impl Monitor {
             &dbzone.get::<String, &str>("Name").unwrap(),
             &dbzone.get::<String, &str>("Coords").unwrap(),
         );
-
-        // TODOs here:
-        // 4. crop image to bounding box of zone polygon
-        // 5. blank remaining area outside zone polygon
 
         let image_buffer_count: usize = dbmon.get("ImageBufferCount").unwrap();
         let width: u32 = dbmon.get("Width").unwrap();
@@ -175,11 +171,30 @@ pub struct ImageToken {
     size: u32,
 }
 
+pub type ZoneShape = Vec<(i32, i32)>;
+
+pub trait Bounding {
+    fn bounding_box(&self) -> Rect;
+}
+
+impl Bounding for ZoneShape {
+    fn bounding_box(&self) -> Rect {
+        let min_x = self.iter().map(|xy| xy.0).min().unwrap();
+        let min_y = self.iter().map(|xy| xy.1).min().unwrap();
+        let max_x = self.iter().map(|xy| xy.0).max().unwrap();
+        let max_y = self.iter().map(|xy| xy.1).max().unwrap();
+
+        let width = max_x - min_x;
+        let height = max_y - min_y;
+        Rect { x: min_x, y: min_y, width, height }
+    }
+}
+
 #[derive(Debug)]
 pub struct ZoneConfig {
     pub size: Option<u32>,
     pub threshold: Option<f32>,
-    pub shape: Vec<(u32, u32)>,
+    pub shape: ZoneShape,
     pub trigger: Option<u32>,
     pub fps: Option<u32>,
 }
@@ -213,8 +228,8 @@ impl ZoneConfig {
         }
     }
 
-    fn parse_zone_coords(coords: &str) -> Vec<(u32, u32)> {
-        let parse = |v: &str| v.trim().parse::<u32>().unwrap();
+    fn parse_zone_coords(coords: &str) -> ZoneShape {
+        let parse = |v: &str| v.trim().parse::<i32>().unwrap();
         coords
             .split_ascii_whitespace()
             .map(|point| point.split_once(','))
