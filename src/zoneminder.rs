@@ -1,7 +1,7 @@
 use libc::timeval;
 use mysql::params;
 use mysql::prelude::Queryable;
-use opencv::core::{Mat, MatTrait, MatTraitConst, Rect, CV_8UC4};
+use opencv::core::{Mat, MatTrait, MatTraitConst, Rect};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::{File, OpenOptions};
@@ -119,25 +119,24 @@ impl Monitor {
         Ok(())
     }
 
-    pub fn read_image(&self, token: ImageToken) -> Result<Mat, Box<dyn Error>> {
+    fn read_image(&self, token: ImageToken) -> Result<Mat, Box<dyn Error>> {
         assert_eq!(self.width * self.height * 4, token.size);
         self.check_file_stale()?;
         let mut mat = Mat::new_size_with_default(
             (self.width as i32, self.height as i32).into(),
-            CV_8UC4,
+            zm_format_to_cv_format(token.format),
             0.into(),
         )?;
         self.read_image_into(token, &mut mat)?;
         Ok(mat)
     }
 
-    pub fn read_image_into(&self, token: ImageToken, mat: &mut Mat) -> Result<(), Box<dyn Error>> {
+    fn read_image_into(&self, token: ImageToken, mat: &mut Mat) -> Result<(), Box<dyn Error>> {
         assert_eq!(self.width * self.height, mat.total() as u32);
-        assert_eq!(mat.typ(), CV_8UC4);
+        assert_eq!(mat.typ(), zm_format_to_cv_format(token.format));
         self.check_file_stale()?;
         let mut slice = unsafe { slice::from_raw_parts_mut(mat.ptr_mut(0)?, token.size as usize) };
-        let image_offset =
-            self.shared_images_offset as u64 + token.size as u64 * token.index as u64;
+        let image_offset = self.shared_images_offset as u64 + token.size as u64 * token.index as u64;
         self.file.read_exact_at(&mut slice, image_offset)?;
         Ok(())
     }
@@ -147,7 +146,32 @@ impl Monitor {
             monitor: self,
             last_read_index: self.image_buffer_count,
         }
+    }
+}
 
+fn convert_to_rgb(format: shm::SubpixelOrder, image: Mat) -> opencv::Result<Mat> {
+    let mut rgb_image = Mat::default();
+    let conversion = match format {
+        shm::SubpixelOrder::NONE => opencv::imgproc::COLOR_GRAY2RGB,
+        shm::SubpixelOrder::RGB => return Ok(image),
+        shm::SubpixelOrder::BGR => opencv::imgproc::COLOR_BGR2RGB,
+        shm::SubpixelOrder::BGRA => opencv::imgproc::COLOR_BGRA2RGB,
+        shm::SubpixelOrder::RGBA => opencv::imgproc::COLOR_RGBA2RGB,
+        _ => panic!("Unsupported pixel format: {:?}", format),
+    };
+    opencv::imgproc::cvt_color(&image, &mut rgb_image, conversion, 0)?;
+    Ok(rgb_image)
+}
+
+fn zm_format_to_cv_format(format: shm::SubpixelOrder) -> i32 {
+    match format {
+        shm::SubpixelOrder::NONE => opencv::core::CV_8UC1,
+        shm::SubpixelOrder::RGB => opencv::core::CV_8UC3,
+        shm::SubpixelOrder::BGR => opencv::core::CV_8UC3,
+        shm::SubpixelOrder::BGRA => opencv::core::CV_8UC4,
+        shm::SubpixelOrder::RGBA => opencv::core::CV_8UC4,
+        shm::SubpixelOrder::ABGR => opencv::core::CV_8UC4,
+        shm::SubpixelOrder::ARGB => opencv::core::CV_8UC4,
     }
 }
 
@@ -162,8 +186,11 @@ impl ImageStream<'_> {
             let state = self.monitor.read()?;
             let last_write_index = state.last_write_index();
             if last_write_index != self.last_read_index && last_write_index != self.monitor.image_buffer_count {
+                let token = state.last_image_token();
+                let format = token.format;
                 self.last_read_index = last_write_index;
-                return self.monitor.read_image(state.last_image_token());
+                let image = self.monitor.read_image(token)?;
+                return Ok(convert_to_rgb(format, image)?);
             }
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -193,10 +220,11 @@ impl MonitorState {
         self.shared_data.last_write_index as u32
     }
 
-    pub fn last_image_token(&self) -> ImageToken {
+    fn last_image_token(&self) -> ImageToken {
         ImageToken {
             index: self.last_write_index(),
             size: self.shared_data.imagesize,
+            format: self.shared_data.format,
         }
     }
 }
@@ -204,6 +232,7 @@ impl MonitorState {
 pub struct ImageToken {
     index: u32,
     size: u32,
+    format: shm::SubpixelOrder,
 }
 
 pub type ZoneShape = Vec<(i32, i32)>;

@@ -3,7 +3,6 @@ use std::error::Error;
 use std::time::{Duration, Instant};
 
 use opencv::core::Mat;
-use opencv::imgproc::{cvt_color, COLOR_RGBA2RGB};
 use simple_moving_average::SMA;
 
 mod ml;
@@ -132,11 +131,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         // TODO: blank remaining area outside zone polygon
         let image = Mat::roi(&image, bounding_box)?;
 
-        let mut rgb_image = Mat::default();
-        cvt_color(&image, &mut rgb_image, COLOR_RGBA2RGB, 0)?;
-
         let t0 = Instant::now();
-        let detections = yolo.infer(&rgb_image)?;
+        let detections = yolo.infer(&image)?;
         let t1 = Instant::now();
         let td = t1 - t0;
 
