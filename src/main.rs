@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::time::{Duration, Instant};
 
@@ -36,30 +36,35 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     */
 
-    opencv::core::set_num_threads(1);
+    //opencv::core::set_num_threads(1);
 
     // run on pngs
-    let mut yolo = ml::YoloV4Tiny::new(0.5, 256)?;
-    for file in vec![
-        "19399-video-0001.png",
-        "19399-video-0002.png",
-        "19399-video-0003.png",
-    ] {
-        println!("Processing {}", file);
-        let image = opencv::imgcodecs::imread(file, opencv::imgcodecs::IMREAD_UNCHANGED)?;
-        println!("{:#?}", image);
-        let t0 = Instant::now();
-        let mut detections = Vec::new();
+    if false {
+        let mut yolo = ml::YoloV4Tiny::new(0.5, 256)?;
+        for file in vec![
+            "19399-video-0001.png",
+            "19399-video-0002.png",
+            "19399-video-0003.png",
+        ] {
+            println!("Processing {}", file);
+            let image = opencv::imgcodecs::imread(file, opencv::imgcodecs::IMREAD_UNCHANGED)?;
+            //println!("{:#?}", image);
+            let mut detections = HashSet::new();
 
-        let N = 80;
-        for n in 0..N {
-            detections.extend(yolo.infer(&image)?);
+            // run once to ignore CUDA compilation
+            yolo.infer(&image)?;
+
+            let t0 = Instant::now();
+            let n = 80;
+            for _ in 0..n {
+                detections.extend(yolo.infer(&image)?);
+            }
+            let td = Instant::now() - t0;
+            println!("Inference completed in {:?}: {:#?}",
+                     td / n, detections);
         }
-        let td = Instant::now() - t0;
-        println!("Inference completed in {:?}: {:#?}",
-                 td / N, detections.len());
+        return Ok(());
     }
-    return Ok(());
 
     /* image should look like
     Mat {

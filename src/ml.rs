@@ -4,12 +4,40 @@ use opencv::dnn::{
 };
 use opencv::types::{VectorOfMat, VectorOfRect};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 #[derive(Clone, Debug)]
 pub struct Detection {
     pub confidence: f32,
     pub class_id: i32,
     pub bounding_box: Rect,
+}
+
+impl Detection {
+    fn confidence_pct(&self) -> u8 {
+        (self.confidence * 100.0) as u8
+    }
+}
+
+impl Hash for Detection {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u8(self.confidence_pct());
+        state.write_i32(self.class_id);
+        state.write_i32(self.bounding_box.width);
+        state.write_i32(self.bounding_box.height);
+        state.write_i32(self.bounding_box.x);
+        state.write_i32(self.bounding_box.y);
+    }
+}
+
+impl PartialEq<Self> for Detection {
+    fn eq(&self, other: &Self) -> bool {
+        self.confidence_pct() == other.confidence_pct() && self.class_id == other.class_id && self.bounding_box == other.bounding_box
+    }
+}
+
+impl Eq for Detection {
+
 }
 
 pub struct YoloV4Tiny {
