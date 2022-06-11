@@ -7,6 +7,7 @@ use simple_moving_average::SMA;
 
 mod ml;
 mod zoneminder;
+mod instrumentation;
 
 use ml::Detection;
 use zoneminder::Bounding;
@@ -96,8 +97,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let monitor_id = args[1].trim().parse()?;
     let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
-
     let monitor = zoneminder::Monitor::connect(&zm_conf, monitor_id)?;
+
+    instrumentation::spawn_prometheus_client(9000 + monitor_id as u16);
 
     eprintln!(
         "{}: Picked up zone configuration: {:?}",
@@ -131,10 +133,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         // TODO: blank remaining area outside zone polygon
         let image = Mat::roi(&image, bounding_box)?;
 
-        let t0 = Instant::now();
+        let inference_start = Instant::now();
         let detections = yolo.infer(&image)?;
-        let t1 = Instant::now();
-        let td = t1 - t0;
+        let inference_duration = inference_start.elapsed();
 
         let detections: Vec<&Detection> = detections
             .iter()
@@ -146,7 +147,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .collect();
 
         if detections.len() > 0 {
-            println!("{}: Inference result (took {:?}): {:?}", monitor_id, td, detections);
+            println!("{}: Inference result (took {:?}): {:?}", monitor_id, inference_duration, detections);
 
             let d = detections.iter().max_by_key(|d| (d.confidence * 1000.0) as u32).unwrap();  // generally there will only be one anyway
             let description = format!(
@@ -165,14 +166,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        if td.as_secs_f32() > pacemaker.target_interval {
+        if inference_duration.as_secs_f32() > pacemaker.target_interval {
             eprintln!(
                 "{}: Cannot keep up with max-analysis-fps (inference taking {:?})!",
-                monitor_id, td,
+                monitor_id, inference_duration,
             );
         }
 
+        instrumentation::INFERENCE_DURATION.observe(inference_duration.as_secs_f64());
+        instrumentation::INFERENCES.inc();
+
         pacemaker.tick();
+        instrumentation::FPS.set(pacemaker.current_frequency() as f64);
     }
     Ok(())
 }
@@ -181,6 +186,7 @@ struct Pacemaker {
     target_interval: f32,
     last_tick: Option<Instant>,
     avg: simple_moving_average::NoSumSMA<f32, f32, 10>,
+    current_frequency: f32,
 }
 
 impl Pacemaker {
@@ -189,6 +195,7 @@ impl Pacemaker {
             target_interval: 1.0f32 / frequency,
             last_tick: None,
             avg: simple_moving_average::NoSumSMA::new(),
+            current_frequency: 0.0,
         }
     }
 
@@ -198,6 +205,7 @@ impl Pacemaker {
             let real_interval = (now - last_iteration).as_secs_f32();
             let delta = self.target_interval - real_interval;
             self.avg.add_sample(delta);
+            self.current_frequency = 1.0f32 / real_interval;
 
             let sleep_time = self.avg.get_average();
             if sleep_time > 0.0 {
@@ -205,5 +213,9 @@ impl Pacemaker {
             }
         }
         self.last_tick = Some(now);
+    }
+
+    fn current_frequency(&self) -> f32 {
+        self.current_frequency
     }
 }
