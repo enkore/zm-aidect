@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::time::{Duration, Instant};
 
-use opencv::core::Mat;
+use opencv::core::{Mat, Rect};
 use simple_moving_average::SMA;
 
 mod ml;
@@ -128,6 +128,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         (17, "Dog"),  // dog
     ].into();
 
+    let trigger_id = monitor.zone.trigger.unwrap_or(monitor_id);
+    let mut event_tracker = coalescing::EventTracker::new();
+
+    let process_update_event = |update: Option<coalescing::UpdateEvent>| {
+        if let Some(update) = update {
+            let description = describe(&classes, &bounding_box, &update.detection);
+            if let Err(e) = zoneminder::update_event_notes(&zm_conf, update.event_id, &description) {
+                eprintln!("{}: Failed to update event {} notes: {}", trigger_id, update.event_id, e);
+            }
+        }
+    };
+
     for image in monitor.stream_images() {
         let image = image?;
         // TODO: blank remaining area outside zone polygon
@@ -149,21 +161,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         if detections.len() > 0 {
             println!("{}: Inference result (took {:?}): {:?}", monitor_id, inference_duration, detections);
 
-            let d = detections.iter().max_by_key(|d| (d.confidence * 1000.0) as u32).unwrap();  // generally there will only be one anyway
-            let description = format!(
-                "{} ({:.1}%) {}x{} (={}) at {}x{}",
-                classes[&d.class_id],
-                d.confidence * 100.0,
-                d.bounding_box.width,
-                d.bounding_box.height,
-                d.bounding_box.width * d.bounding_box.height,
-                d.bounding_box.x + bounding_box.x,
-                d.bounding_box.y + bounding_box.y,
-            );
-            let trigger_id = monitor.zone.trigger.unwrap_or(monitor_id);
-            if let Err(e) = zoneminder::zmtrigger::trigger_autocancel(trigger_id, "aidect", &description, 1) {
-                eprintln!("{}: Failed to trigger zm: {}", monitor_id, e);
-            }
+            let &d = detections.iter().max_by_key(|d| (d.confidence * 1000.0) as u32).unwrap();  // generally there will only be one anyway
+            let score = (d.confidence * 100.0) as u32;
+            let description = describe(&classes, &bounding_box, &d);
+            match zoneminder::zmtrigger::trigger_autocancel(trigger_id, "aidect", &description, score) {
+                Ok(event_id) => {
+                    let update = event_tracker.push_detection(d.clone(), event_id);
+                    process_update_event(update);
+                },
+                Err(e) => eprintln!("{}: Failed to trigger zm: {}", trigger_id, e),
+            };
         }
 
         if inference_duration.as_secs_f32() > pacemaker.target_interval {
@@ -178,8 +185,87 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         pacemaker.tick();
         instrumentation::FPS.set(pacemaker.current_frequency() as f64);
+        let update = event_tracker.check_timeout();
+        process_update_event(update);
     }
     Ok(())
+}
+
+fn describe(classes: &HashMap<i32, &str>, bounding_box: &Rect, d: &Detection) -> String {
+    format!(
+        "{} ({:.1}%) {}x{} (={}) at {}x{}",
+        classes[&d.class_id],
+        d.confidence * 100.0,
+        d.bounding_box.width,
+        d.bounding_box.height,
+        d.bounding_box.width * d.bounding_box.height,
+        d.bounding_box.x + bounding_box.x,
+        d.bounding_box.y + bounding_box.y,
+    )
+}
+
+mod coalescing {
+    use std::time::{Duration, Instant};
+    use crate::ml::Detection;
+
+    struct TrackedEvent {
+        event_id: u32,
+        triggered: Instant,
+    }
+
+    pub struct UpdateEvent {
+        pub event_id: u32,
+        pub detection: Detection,
+    }
+
+    pub struct EventTracker {
+        timeout: Duration,
+        current_event: Option<TrackedEvent>,
+        detections: Vec<Detection>,
+    }
+
+    impl EventTracker {
+        pub fn new() -> EventTracker {
+            EventTracker {
+                timeout: Duration::from_secs(30),
+                current_event: None,
+                detections: Vec::new(),
+            }
+        }
+
+        pub fn push_detection(&mut self, d: Detection, event_id: u32) -> Option<UpdateEvent> {
+            let mut update = None;
+            if let Some(current_event) = &self.current_event {
+                if current_event.event_id != event_id && self.detections.len() > 0 {
+                    update = self.clear();
+                }
+            }
+            self.current_event = Some(TrackedEvent { event_id, triggered: Instant::now() });
+            self.detections.push(d);
+            update
+        }
+
+        pub fn check_timeout(&mut self) -> Option<UpdateEvent> {
+            if self.current_event.as_ref().map_or(true, |te| te.triggered.elapsed() < self.timeout) || self.detections.is_empty() {
+                return None;
+            }
+            self.clear()
+        }
+
+        fn clear(&mut self) -> Option<UpdateEvent> {
+            let current_event = self.current_event.as_ref().unwrap();
+            let mut update = None;
+            if self.detections.len() > 1 {
+                let detection = self.detections.iter().max_by_key(|d| (d.confidence * 1000.0) as u32).unwrap();
+                // TODO: aggregate by classes, annotate counts.
+                println!("Would update event {} with new description {:?}", current_event.event_id, detection);
+                update = Some(UpdateEvent { event_id: current_event.event_id, detection: detection.clone() });
+            }
+            self.detections.clear();
+            self.current_event = None;
+            update
+        }
+    }
 }
 
 struct Pacemaker {

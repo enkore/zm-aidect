@@ -7,12 +7,12 @@ pub fn trigger_autocancel(
     monitor_id: u32,
     cause: &str,
     text: &str,
-    duration: u32,
+    score: u32,
 ) -> Result<u32, Box<dyn Error>> {
     assert!(cause.len() < 32);
     assert!(text.len() < 255);
     let response = send_zm_trigger_command(
-        &format!("{}|on+{}|1|{}|{}|", monitor_id, duration, cause, text),
+        &format!("{}|on+1|{}|{}|{}|", monitor_id, score, cause, text),
         true,
     )?;
     let error = format!("No/invalid reply: {}", response).to_string();

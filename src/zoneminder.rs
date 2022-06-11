@@ -14,6 +14,15 @@ use std::{fs, io, slice};
 mod shm;
 pub mod zmtrigger;
 
+pub fn update_event_notes(zm_conf: &ZoneMinderConf, event_id: u32, notes: &str) -> mysql::Result<()> {
+    let mut db = zm_conf.connect_db()?;
+    db.exec_drop("UPDATE Events SET Notes = :notes WHERE Id = :id",
+            params! {
+                "id" => event_id,
+                "notes" => notes,
+            })
+}
+
 #[allow(dead_code)]
 pub struct Monitor {
     mmap_path: String,
