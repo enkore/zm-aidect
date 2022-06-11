@@ -111,8 +111,8 @@ impl YoloV4Tiny {
                             let width = (width * image_width) as i32;
                             let height = (height * image_height) as i32;
 
-                            let left_edge = center_x - width / 2;
-                            let top_edge = center_y - height / 2;
+                            let left_edge = (center_x - width / 2).max(0);
+                            let top_edge = (center_y - height / 2).max(0);
 
                             Rect::new(left_edge, top_edge, width, height)
                         };
