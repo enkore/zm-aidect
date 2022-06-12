@@ -158,8 +158,17 @@ impl Monitor<'_> {
     /// Mark at least one frame as an alarm frame with the given score. Wait for event to be created,
     /// then return event ID. Does not necessarily cause creation of a new event.
     pub fn trigger(&self, cause: &str, description: &str, score: u32) -> io::Result<u64> {
+        let poll_interval = 10;
         self.set_trigger(cause, description, score)?;
-        std::thread::sleep(Duration::from_millis(100));  // XXX: there really should be a better way for this, yeah?
+        for n in 0.. {
+            if self.read()?.shared_data.state == shm::MonitorState::Alarm {
+                break
+            }
+            std::thread::sleep(Duration::from_millis(poll_interval));
+            if n > 500 {
+                eprintln!("Waited {} ms for zoneminder to notice our bulgy wulgy, giving up and canceling it :c", n * poll_interval);
+            }
+        }
         self.reset_trigger()?;
         Ok(self.read()?.shared_data.last_event_id)
     }
