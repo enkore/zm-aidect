@@ -151,7 +151,7 @@ impl Monitor<'_> {
         trigger_data.trigger_showtext.fill(0);
         trigger_data.trigger_score = 0;
         self.pwrite(self.trigger_data_offset, &trigger_data)?;
-        trigger_data.trigger_state = shm::TriggerState::TriggerOff;
+        trigger_data.trigger_state = shm::TriggerState::TriggerCancel;
         self.pwrite(self.trigger_data_offset, &trigger_data)
     }
 
