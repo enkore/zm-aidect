@@ -8,7 +8,7 @@ use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
 use std::mem::size_of;
 use std::os::unix::fs::{FileExt, MetadataExt};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use std::{fs, io, slice};
 
 mod shm;
@@ -28,7 +28,6 @@ pub fn update_event_notes(
     )
 }
 
-#[allow(dead_code)]
 pub struct Monitor<'zmconf> {
     monitor_id: u32,
     zm_conf: &'zmconf ZoneMinderConf,
@@ -37,41 +36,17 @@ pub struct Monitor<'zmconf> {
     file: File,
     ino: u64,
 
-    width: u32,
-    height: u32,
-
-    pub max_fps: f32,            // XXX
-    pub image_buffer_count: u32, // XXX
-
     trigger_data_offset: usize,
     videostore_data_offset: usize,
-    shared_timestamps_offset: usize,
-    shared_images_offset: usize,
 }
 
 impl Monitor<'_> {
     pub fn connect(zm_conf: &ZoneMinderConf, monitor_id: u32) -> Result<Monitor, Box<dyn Error>> {
-        let mut db = zm_conf.connect_db()?;
-        let dbmon = db.exec_first("SELECT Name, StorageId, Enabled, Width, Height, Colours, ImageBufferCount, AnalysisFPSLimit FROM Monitors WHERE Id = :id",
-                                  params! { "id" => monitor_id }
-        )?;
-        let dbmon: mysql::Row = dbmon.unwrap();
-
-        let image_buffer_count: usize = dbmon.get("ImageBufferCount").unwrap();
-        let width: u32 = dbmon.get("Width").unwrap();
-        let height: u32 = dbmon.get("Height").unwrap();
-        let max_fps: f32 = dbmon.get("AnalysisFPSLimit").unwrap();
-
         let mmap_path = format!("{}/zm.mmap.{}", zm_conf.mmap_path, monitor_id);
         let file = OpenOptions::new().read(true).write(true).open(&mmap_path)?;
 
         let trigger_data_offset = size_of::<shm::MonitorSharedData>();
         let videostore_data_offset = trigger_data_offset + size_of::<shm::MonitorTriggerData>();
-        let shared_timestamps_offset =
-            videostore_data_offset + size_of::<shm::MonitorVideoStoreData>();
-        let shared_images_offset =
-            shared_timestamps_offset + image_buffer_count * size_of::<timeval>();
-        let shared_images_offset = shared_images_offset + 64 - (shared_images_offset % 64);
 
         Ok(Monitor {
             monitor_id,
@@ -80,15 +55,8 @@ impl Monitor<'_> {
             ino: file.metadata()?.ino(),
             file,
 
-            width,
-            height,
-            image_buffer_count: image_buffer_count as u32,
-            max_fps,
-
             trigger_data_offset,
             videostore_data_offset,
-            shared_timestamps_offset,
-            shared_images_offset,
         })
     }
 
@@ -106,39 +74,53 @@ impl Monitor<'_> {
         ))
     }
 
-    fn pread<T>(&self, offset: usize) -> io::Result<T> {
-        let mut buf = Vec::new();
-        buf.resize(size_of::<T>(), 0);
-        self.file.read_exact_at(&mut buf, offset as u64)?;
-        unsafe { Ok(std::ptr::read(buf.as_ptr() as *const _)) }
+    pub fn get_max_analysis_fps(&self) -> Result<f32, Box<dyn Error>> {
+        let config_row = self.query_monitor_config()?;
+        Ok(config_row.get("AnalysisFPSLimit").unwrap())
     }
 
-    fn pwrite<T>(&self, offset: usize, data: &T) -> io::Result<()> {
-        let data = unsafe { slice::from_raw_parts(data as *const T as *const u8, size_of::<T>()) };
-        self.file.write_all_at(data, offset as u64)
-    }
+    pub fn stream_images(&self) -> Result<ImageStream, Box<dyn Error>> {
+        let state = self.read()?;
+        let config_row = self.query_monitor_config()?;
+        let image_buffer_count: u32 = config_row.get("ImageBufferCount").unwrap();
+        let width: u32 = config_row.get("Width").unwrap();
+        let height: u32 = config_row.get("Height").unwrap();
 
-    pub fn read(&self) -> io::Result<MonitorState> {
-        let shared_data: shm::MonitorSharedData = self.pread(0)?;
-        let trigger_data: shm::MonitorTriggerData = self.pread(self.trigger_data_offset)?;
-        if shared_data.valid == 0 {
-            return Err(io::Error::new(ErrorKind::Other, "Monitor shm is not valid"));
-        }
-        self.check_file_stale()?;
-        assert_eq!(
-            shared_data.size as usize,
-            size_of::<shm::MonitorSharedData>(),
-            "Invalid SHM shared_data size, incompatible ZoneMinder version"
-        );
-        assert_eq!(
-            trigger_data.size as usize,
-            size_of::<shm::MonitorTriggerData>(),
-            "Invalid SHM trigger_data size, incompatible ZoneMinder version"
-        );
-        Ok(MonitorState {
-            shared_data,
-            trigger_data,
+        // now that we have the image buffer size we can figure the dynamic offsets out
+        let shared_timestamps_offset = self.videostore_data_offset + size_of::<shm::MonitorVideoStoreData>();
+        let shared_images_offset = shared_timestamps_offset + image_buffer_count as usize * size_of::<timeval>();
+        let shared_images_offset = shared_images_offset + 64 - (shared_images_offset % 64);
+
+        Ok(ImageStream {
+            width, height, image_buffer_count,
+            monitor: self,
+            last_read_index: image_buffer_count,
+            image_size: state.shared_data.imagesize,
+            format: state.shared_data.format,
+            shared_images_offset: shared_images_offset as u64,
         })
+    }
+
+    /// Mark at least one frame as an alarm frame with the given score. Wait for event to be created,
+    /// then return event ID. Does not necessarily cause creation of a new event.
+    pub fn trigger(&self, cause: &str, description: &str, score: u32) -> io::Result<u64> {
+        let poll_interval = 10;
+        self.set_trigger(cause, description, score)?;
+        for n in 0.. {
+            let state = self.read()?.shared_data.state;
+            // Alarm sorta implies that we just triggered an alarm frame, while
+            // Alert sorta implies there's an on-going event.
+            // In any case last_event_id ought to usually be "our" event ID for this alarmation.
+            if state == shm::MonitorState::Alarm || state == shm::MonitorState::Alert {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(poll_interval));
+            if n > 500 {
+                eprintln!("Waited {} ms for zoneminder to notice our bulgy wulgy, giving up and canceling it :c", n * poll_interval);
+            }
+        }
+        self.reset_trigger()?;
+        Ok(self.read()?.shared_data.last_event_id)
     }
 
     fn set_trigger(&self, cause: &str, description: &str, score: u32) -> io::Result<()> {
@@ -167,26 +149,39 @@ impl Monitor<'_> {
         self.pwrite(self.trigger_data_offset, &trigger_data)
     }
 
-    /// Mark at least one frame as an alarm frame with the given score. Wait for event to be created,
-    /// then return event ID. Does not necessarily cause creation of a new event.
-    pub fn trigger(&self, cause: &str, description: &str, score: u32) -> io::Result<u64> {
-        let poll_interval = 10;
-        self.set_trigger(cause, description, score)?;
-        for n in 0.. {
-            let state = self.read()?.shared_data.state;
-            // Alarm sorta implies that we just triggered an alarm frame, while
-            // Alert sorta implies there's an on-going event.
-            // In any case last_event_id ought to usually be "our" event ID for this alarmation.
-            if state == shm::MonitorState::Alarm || state == shm::MonitorState::Alert {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(poll_interval));
-            if n > 500 {
-                eprintln!("Waited {} ms for zoneminder to notice our bulgy wulgy, giving up and canceling it :c", n * poll_interval);
-            }
+    fn read(&self) -> io::Result<MonitorState> {
+        let shared_data: shm::MonitorSharedData = self.pread(0)?;
+        let trigger_data: shm::MonitorTriggerData = self.pread(self.trigger_data_offset)?;
+        if shared_data.valid == 0 {
+            return Err(io::Error::new(ErrorKind::Other, "Monitor shm is not valid"));
         }
-        self.reset_trigger()?;
-        Ok(self.read()?.shared_data.last_event_id)
+        self.check_file_stale()?;
+        assert_eq!(
+            shared_data.size as usize,
+            size_of::<shm::MonitorSharedData>(),
+            "Invalid SHM shared_data size, incompatible ZoneMinder version"
+        );
+        assert_eq!(
+            trigger_data.size as usize,
+            size_of::<shm::MonitorTriggerData>(),
+            "Invalid SHM trigger_data size, incompatible ZoneMinder version"
+        );
+        Ok(MonitorState {
+            shared_data,
+            trigger_data,
+        })
+    }
+
+    fn pread<T>(&self, offset: usize) -> io::Result<T> {
+        let mut buf = Vec::new();
+        buf.resize(size_of::<T>(), 0);
+        self.file.read_exact_at(&mut buf, offset as u64)?;
+        unsafe { Ok(std::ptr::read(buf.as_ptr() as *const _)) }
+    }
+
+    fn pwrite<T>(&self, offset: usize, data: &T) -> io::Result<()> {
+        let data = unsafe { slice::from_raw_parts(data as *const T as *const u8, size_of::<T>()) };
+        self.file.write_all_at(data, offset as u64)
     }
 
     fn check_file_stale(&self) -> io::Result<()> {
@@ -201,34 +196,12 @@ impl Monitor<'_> {
         Ok(())
     }
 
-    fn read_image(&self, token: ImageToken) -> Result<Mat, Box<dyn Error>> {
-        assert_eq!(self.width * self.height * 4, token.size);
-        self.check_file_stale()?;
-        let mut mat = Mat::new_size_with_default(
-            (self.width as i32, self.height as i32).into(),
-            zm_format_to_cv_format(token.format),
-            0.into(),
+    fn query_monitor_config(&self) -> mysql::Result<mysql::Row> {
+        let mut db = self.zm_conf.connect_db()?;
+        let dbmon = db.exec_first("SELECT Name, StorageId, Enabled, Width, Height, Colours, ImageBufferCount, AnalysisFPSLimit FROM Monitors WHERE Id = :id",
+                                  params! { "id" => self.monitor_id }
         )?;
-        self.read_image_into(token, &mut mat)?;
-        Ok(mat)
-    }
-
-    fn read_image_into(&self, token: ImageToken, mat: &mut Mat) -> Result<(), Box<dyn Error>> {
-        assert_eq!(self.width * self.height, mat.total() as u32);
-        assert_eq!(mat.typ(), zm_format_to_cv_format(token.format));
-        self.check_file_stale()?;
-        let mut slice = unsafe { slice::from_raw_parts_mut(mat.ptr_mut(0)?, token.size as usize) };
-        let image_offset =
-            self.shared_images_offset as u64 + token.size as u64 * token.index as u64;
-        self.file.read_exact_at(&mut slice, image_offset)?;
-        Ok(())
-    }
-
-    pub fn stream_images(&self) -> ImageStream {
-        ImageStream {
-            monitor: self,
-            last_read_index: self.image_buffer_count,
-        }
+        Ok(dbmon.unwrap())
     }
 }
 
@@ -261,24 +234,49 @@ fn zm_format_to_cv_format(format: shm::SubpixelOrder) -> i32 {
 pub struct ImageStream<'mon> {
     monitor: &'mon Monitor<'mon>,
     last_read_index: u32,
+    width: u32,
+    height: u32,
+    image_size: u32,
+    format: shm::SubpixelOrder,
+    image_buffer_count: u32,
+    shared_images_offset: u64,
 }
 
 impl ImageStream<'_> {
     fn wait_for_image(&mut self) -> Result<Mat, Box<dyn Error>> {
         loop {
             let state = self.monitor.read()?;
-            let last_write_index = state.last_write_index();
+            let last_write_index = state.shared_data.last_write_index as u32;
             if last_write_index != self.last_read_index
-                && last_write_index != self.monitor.image_buffer_count
+                && last_write_index != self.image_buffer_count
             {
-                let token = state.last_image_token();
-                let format = token.format;
                 self.last_read_index = last_write_index;
-                let image = self.monitor.read_image(token)?;
-                return Ok(convert_to_rgb(format, image)?);
+                let image = self.read_image(last_write_index)?;
+                return Ok(convert_to_rgb(self.format, image)?);
             }
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    fn read_image(&self, index: u32) -> Result<Mat, Box<dyn Error>> {
+        assert_eq!(self.width * self.height * 4, self.image_size);
+        let mut mat = Mat::new_size_with_default(
+            (self.width as i32, self.height as i32).into(),
+            zm_format_to_cv_format(self.format),
+            0.into(),
+        )?;
+        self.read_image_into(index, &mut mat)?;
+        Ok(mat)
+    }
+
+    fn read_image_into(&self, index: u32, mat: &mut Mat) -> Result<(), Box<dyn Error>> {
+        assert_eq!(self.width * self.height, mat.total() as u32);
+        assert_eq!(mat.typ(), zm_format_to_cv_format(self.format));
+        self.monitor.check_file_stale()?;
+        let mut slice = unsafe { slice::from_raw_parts_mut(mat.ptr_mut(0)?, self.image_size as usize) };
+        let image_offset = self.shared_images_offset as u64 + self.image_size as u64 * index as u64;
+        self.monitor.file.read_exact_at(&mut slice, image_offset)?;
+        Ok(())
     }
 }
 
@@ -290,39 +288,9 @@ impl Iterator for ImageStream<'_> {
     }
 }
 
-pub struct MonitorState {
+struct MonitorState {
     shared_data: shm::MonitorSharedData,
     trigger_data: shm::MonitorTriggerData,
-}
-
-impl MonitorState {
-    pub fn last_write_time(&self) -> SystemTime {
-        let value = self.shared_data.last_write_time;
-        UNIX_EPOCH + Duration::from_secs(value as u64)
-    }
-
-    pub fn last_write_index(&self) -> u32 {
-        self.shared_data.last_write_index as u32
-    }
-
-    pub fn is_alert(&self) -> bool {
-        self.shared_data.state == shm::MonitorState::Alarm
-            || self.shared_data.state == shm::MonitorState::Alert
-    }
-
-    fn last_image_token(&self) -> ImageToken {
-        ImageToken {
-            index: self.last_write_index(),
-            size: self.shared_data.imagesize,
-            format: self.shared_data.format,
-        }
-    }
-}
-
-pub struct ImageToken {
-    index: u32,
-    size: u32,
-    format: shm::SubpixelOrder,
 }
 
 pub type ZoneShape = Vec<(i32, i32)>;

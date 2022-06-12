@@ -116,7 +116,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         false,
     )?;
 
-    let max_fps = zone_config.fps.map(|v| v as f32).unwrap_or(monitor.max_fps);
+    let max_fps = zone_config.fps.map(|v| v as f32).unwrap_or(monitor.get_max_analysis_fps()?);
     let mut pacemaker = Pacemaker::new(max_fps);
 
     let classes: HashMap<i32, &str> = [
@@ -144,7 +144,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    for image in monitor.stream_images() {
+    for image in monitor.stream_images()? {
         let image = image?;
         // TODO: blank remaining area outside zone polygon
         let image = Mat::roi(&image, bounding_box)?;
