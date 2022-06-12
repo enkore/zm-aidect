@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 use opencv::core::{Mat, Rect};
 use simple_moving_average::SMA;
 
+mod instrumentation;
 mod ml;
 mod zoneminder;
-mod instrumentation;
 
 use ml::Detection;
 use zoneminder::Bounding;
@@ -116,9 +116,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         false,
     )?;
 
-    let max_fps = zone_config.fps
-        .map(|v| v as f32)
-        .unwrap_or(monitor.max_fps);
+    let max_fps = zone_config.fps.map(|v| v as f32).unwrap_or(monitor.max_fps);
     let mut pacemaker = Pacemaker::new(max_fps);
 
     let classes: HashMap<i32, &str> = [
@@ -127,16 +125,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         (15, "Bird"), // bird
         (16, "Cat"),  // cat
         (17, "Dog"),  // dog
-    ].into();
+    ]
+    .into();
 
     let trigger_id = zone_config.trigger.unwrap_or(monitor_id);
-    let mut event_tracker = coalescing::EventTracker::new(monitor_id);
+    let mut event_tracker = coalescing::EventTracker::new();
 
     let process_update_event = |update: Option<coalescing::UpdateEvent>| {
         if let Some(update) = update {
             let description = describe(&classes, &bounding_box, &update.detection);
-            if let Err(e) = zoneminder::update_event_notes(&zm_conf, update.event_id, &description) {
-                eprintln!("{}: Failed to update event {} notes: {}", trigger_id, update.event_id, e);
+            if let Err(e) = zoneminder::update_event_notes(&zm_conf, update.event_id, &description)
+            {
+                eprintln!(
+                    "{}: Failed to update event {} notes: {}",
+                    trigger_id, update.event_id, e
+                );
             }
         }
     };
@@ -160,9 +163,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             .collect();
 
         if detections.len() > 0 {
-            //println!("{}: Inference result (took {:?}): {:?}", monitor_id, inference_duration, detections);
+            println!(
+                "{}: Inference result (took {:?}): {:?}",
+                monitor_id, inference_duration, detections
+            );
 
-            let &d = detections.iter().max_by_key(|d| (d.confidence * 1000.0) as u32).unwrap();  // generally there will only be one anyway
+            let &d = detections
+                .iter()
+                .max_by_key(|d| (d.confidence * 1000.0) as u32)
+                .unwrap(); // generally there will only be one anyway
             let score = (d.confidence * 100.0) as u32;
             let description = describe(&classes, &bounding_box, &d);
 
@@ -208,8 +217,8 @@ fn describe(classes: &HashMap<i32, &str>, bounding_box: &Rect, d: &Detection) ->
 }
 
 mod coalescing {
-    use std::time::{Duration, Instant};
     use crate::ml::Detection;
+    use std::time::{Duration, Instant};
 
     struct TrackedEvent {
         event_id: u64,
@@ -222,16 +231,14 @@ mod coalescing {
     }
 
     pub struct EventTracker {
-        monitor_id: u32,
         timeout: Duration,
         current_event: Option<TrackedEvent>,
         detections: Vec<Detection>,
     }
 
     impl EventTracker {
-        pub fn new(monitor_id: u32) -> EventTracker {
+        pub fn new() -> EventTracker {
             EventTracker {
-                monitor_id,
                 timeout: Duration::from_secs(30),
                 current_event: None,
                 detections: Vec::new(),
@@ -242,12 +249,13 @@ mod coalescing {
             let mut update = None;
             if let Some(current_event) = &self.current_event {
                 if current_event.event_id != event_id {
-                    eprintln!("{}: New event started, flushing old one: {} -> {}", self.monitor_id, current_event.event_id, event_id);
                     update = self.clear();
                 }
             }
-            eprintln!("{}: Pushing detection to event: {} -> {:?}", self.monitor_id, event_id, d);
-            self.current_event = Some(TrackedEvent { event_id, triggered: Instant::now() });
+            self.current_event = Some(TrackedEvent {
+                event_id,
+                triggered: Instant::now(),
+            });
             self.detections.push(d);
             update
         }
@@ -261,7 +269,6 @@ mod coalescing {
                 if current_event.triggered.elapsed() < self.timeout {
                     return None;
                 }
-                eprintln!("{}: Event {} timed out (triggered {:?} ago), flushing", self.monitor_id, current_event.event_id, current_event.triggered);
                 return self.clear();
             }
             None
@@ -271,10 +278,16 @@ mod coalescing {
             let current_event = self.current_event.as_ref().unwrap();
             let mut update = None;
             if self.detections.len() > 1 {
-                let detection = self.detections.iter().max_by_key(|d| (d.confidence * 1000.0) as u32).unwrap();
+                let detection = self
+                    .detections
+                    .iter()
+                    .max_by_key(|d| (d.confidence * 1000.0) as u32)
+                    .unwrap();
                 // TODO: aggregate by classes, annotate counts.
-                println!("{}: Would update event {} (detections: {:?}) new description {:?}", self.monitor_id, current_event.event_id, self.detections, detection);
-                update = Some(UpdateEvent { event_id: current_event.event_id, detection: detection.clone() });
+                update = Some(UpdateEvent {
+                    event_id: current_event.event_id,
+                    detection: detection.clone(),
+                });
             }
             self.detections.clear();
             self.current_event = None;

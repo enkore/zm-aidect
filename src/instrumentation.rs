@@ -1,5 +1,8 @@
-use prometheus::{Encoder, Gauge, register_gauge, Counter, register_counter, Histogram, register_histogram, DEFAULT_BUCKETS, TextEncoder};
 use lazy_static::lazy_static;
+use prometheus::{
+    register_counter, register_gauge, register_histogram, Counter, Encoder, Gauge, Histogram,
+    TextEncoder, DEFAULT_BUCKETS,
+};
 
 lazy_static! {
     // DEFAULT_BUCKETS are a good fit here actually.

@@ -1,4 +1,4 @@
-use libc::{c_char, c_double, time_t, timeval};
+use libc::{c_double, time_t, timeval};
 use std::mem::size_of;
 
 #[derive(Copy, Clone, Debug)]
@@ -49,10 +49,10 @@ const _: [u8; 760] = [0; size_of::<MonitorSharedData>()];
 pub(super) enum MonitorState {
     Unknown = 0,
     Idle,
-    Prealarm,  // Likely when there are alarm frames but not enough to trigger an event
-    Alarm,  // I believe "current" frame is an alarm frame
-    Alert,  // Current frame is not an alarm frame, but we're still in an alarmed state
-    Tape  // I think this is the idle state of Mocord and Record
+    Prealarm, // Likely when there are alarm frames but not enough to trigger an event
+    Alarm,    // I believe "current" frame is an alarm frame
+    Alert,    // Current frame is not an alarm frame, but we're still in an alarmed state
+    Tape,     // I think this is the idle state of Mocord and Record
 }
 
 // zm_rgb.h

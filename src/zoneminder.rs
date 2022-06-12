@@ -13,13 +13,19 @@ use std::{fs, io, slice};
 
 mod shm;
 
-pub fn update_event_notes(zm_conf: &ZoneMinderConf, event_id: u64, notes: &str) -> mysql::Result<()> {
+pub fn update_event_notes(
+    zm_conf: &ZoneMinderConf,
+    event_id: u64,
+    notes: &str,
+) -> mysql::Result<()> {
     let mut db = zm_conf.connect_db()?;
-    db.exec_drop("UPDATE Events SET Notes = :notes WHERE Id = :id",
-            params! {
-                "id" => event_id,
-                "notes" => notes,
-            })
+    db.exec_drop(
+        "UPDATE Events SET Notes = :notes WHERE Id = :id",
+        params! {
+            "id" => event_id,
+            "notes" => notes,
+        },
+    )
 }
 
 #[allow(dead_code)]
@@ -108,9 +114,7 @@ impl Monitor<'_> {
     }
 
     fn pwrite<T>(&self, offset: usize, data: &T) -> io::Result<()> {
-        let data = unsafe {
-            slice::from_raw_parts(data as *const T as *const u8, size_of::<T>())
-        };
+        let data = unsafe { slice::from_raw_parts(data as *const T as *const u8, size_of::<T>()) };
         self.file.write_all_at(data, offset as u64)
     }
 
@@ -121,8 +125,16 @@ impl Monitor<'_> {
             return Err(io::Error::new(ErrorKind::Other, "Monitor shm is not valid"));
         }
         self.check_file_stale()?;
-        assert_eq!(shared_data.size as usize, size_of::<shm::MonitorSharedData>(), "Invalid SHM shared_data size, incompatible ZoneMinder version");
-        assert_eq!(trigger_data.size as usize, size_of::<shm::MonitorTriggerData>(), "Invalid SHM trigger_data size, incompatible ZoneMinder version");
+        assert_eq!(
+            shared_data.size as usize,
+            size_of::<shm::MonitorSharedData>(),
+            "Invalid SHM shared_data size, incompatible ZoneMinder version"
+        );
+        assert_eq!(
+            trigger_data.size as usize,
+            size_of::<shm::MonitorTriggerData>(),
+            "Invalid SHM trigger_data size, incompatible ZoneMinder version"
+        );
         Ok(MonitorState {
             shared_data,
             trigger_data,
@@ -162,7 +174,7 @@ impl Monitor<'_> {
         self.set_trigger(cause, description, score)?;
         for n in 0.. {
             if self.read()?.shared_data.state == shm::MonitorState::Alarm {
-                break
+                break;
             }
             std::thread::sleep(Duration::from_millis(poll_interval));
             if n > 500 {
@@ -202,7 +214,8 @@ impl Monitor<'_> {
         assert_eq!(mat.typ(), zm_format_to_cv_format(token.format));
         self.check_file_stale()?;
         let mut slice = unsafe { slice::from_raw_parts_mut(mat.ptr_mut(0)?, token.size as usize) };
-        let image_offset = self.shared_images_offset as u64 + token.size as u64 * token.index as u64;
+        let image_offset =
+            self.shared_images_offset as u64 + token.size as u64 * token.index as u64;
         self.file.read_exact_at(&mut slice, image_offset)?;
         Ok(())
     }
@@ -251,7 +264,9 @@ impl ImageStream<'_> {
         loop {
             let state = self.monitor.read()?;
             let last_write_index = state.last_write_index();
-            if last_write_index != self.last_read_index && last_write_index != self.monitor.image_buffer_count {
+            if last_write_index != self.last_read_index
+                && last_write_index != self.monitor.image_buffer_count
+            {
                 let token = state.last_image_token();
                 let format = token.format;
                 self.last_read_index = last_write_index;
@@ -287,7 +302,8 @@ impl MonitorState {
     }
 
     pub fn is_alert(&self) -> bool {
-        self.shared_data.state == shm::MonitorState::Alarm || self.shared_data.state == shm::MonitorState::Alert
+        self.shared_data.state == shm::MonitorState::Alarm
+            || self.shared_data.state == shm::MonitorState::Alert
     }
 
     fn last_image_token(&self) -> ImageToken {
