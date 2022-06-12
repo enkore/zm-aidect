@@ -88,6 +88,10 @@ impl Monitor<'_> {
         })
     }
 
+    pub fn is_idle(&self) -> io::Result<bool> {
+        Ok(self.read()?.shared_data.state == shm::MonitorState::Idle)
+    }
+
     /// Mark at least one frame as an alarm frame with the given score. Wait for event to be created,
     /// then return event ID. Does not necessarily cause creation of a new event.
     pub fn trigger(&self, cause: &str, description: &str, score: u32) -> io::Result<u64> {

@@ -186,6 +186,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             process_update_event(update);
         }
 
+        if monitor.is_idle()? {
+            // Not recording any more, flush current event description if any
+            let update = event_tracker.clear();
+            process_update_event(update);
+        }
+
         if inference_duration.as_secs_f32() > pacemaker.target_interval {
             eprintln!(
                 "{}: Cannot keep up with max-analysis-fps (inference taking {:?})!",
@@ -198,8 +204,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         pacemaker.tick();
         instrumentation::FPS.set(pacemaker.current_frequency() as f64);
-        let update = event_tracker.check_timeout();
-        process_update_event(update);
     }
     Ok(())
 }
@@ -219,11 +223,9 @@ fn describe(classes: &HashMap<i32, &str>, bounding_box: &Rect, d: &Detection) ->
 
 mod coalescing {
     use crate::ml::Detection;
-    use std::time::{Duration, Instant};
 
     struct TrackedEvent {
         event_id: u64,
-        triggered: Instant,
     }
 
     pub struct UpdateEvent {
@@ -232,15 +234,13 @@ mod coalescing {
     }
 
     pub struct EventTracker {
-        timeout: Duration,
         current_event: Option<TrackedEvent>,
-        detections: Vec<Detection>,
+        detections: Vec<Detection>,  // shouldn't this kinda be like on TrackedEvent?
     }
 
     impl EventTracker {
         pub fn new() -> EventTracker {
             EventTracker {
-                timeout: Duration::from_secs(30),
                 current_event: None,
                 detections: Vec::new(),
             }
@@ -255,27 +255,15 @@ mod coalescing {
             }
             self.current_event = Some(TrackedEvent {
                 event_id,
-                triggered: Instant::now(),
             });
             self.detections.push(d);
             update
         }
 
-        pub fn check_timeout(&mut self) -> Option<UpdateEvent> {
-            // just check if the event has an end time in the databae, d'uh
-            if self.current_event.is_none() || self.detections.is_empty() {
+        pub fn clear(&mut self) -> Option<UpdateEvent> {
+            if self.current_event.is_none() {
                 return None;
             }
-            if let Some(current_event) = self.current_event.as_ref() {
-                if current_event.triggered.elapsed() < self.timeout {
-                    return None;
-                }
-                return self.clear();
-            }
-            None
-        }
-
-        fn clear(&mut self) -> Option<UpdateEvent> {
             let current_event = self.current_event.as_ref().unwrap();
             let mut update = None;
             if self.detections.len() > 1 {
