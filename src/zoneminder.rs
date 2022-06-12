@@ -12,9 +12,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs, io, slice};
 
 mod shm;
-pub mod zmtrigger;
 
-pub fn update_event_notes(zm_conf: &ZoneMinderConf, event_id: u32, notes: &str) -> mysql::Result<()> {
+pub fn update_event_notes(zm_conf: &ZoneMinderConf, event_id: u64, notes: &str) -> mysql::Result<()> {
     let mut db = zm_conf.connect_db()?;
     db.exec_drop("UPDATE Events SET Notes = :notes WHERE Id = :id",
             params! {
@@ -24,15 +23,16 @@ pub fn update_event_notes(zm_conf: &ZoneMinderConf, event_id: u32, notes: &str) 
 }
 
 #[allow(dead_code)]
-pub struct Monitor {
+pub struct Monitor<'zmconf> {
+    monitor_id: u32,
+    zm_conf: &'zmconf ZoneMinderConf,
+
     mmap_path: String,
     file: File,
     ino: u64,
 
     width: u32,
     height: u32,
-
-    pub zone: ZoneConfig,
 
     pub max_fps: f32,            // XXX
     pub image_buffer_count: u32, // XXX
@@ -43,24 +43,13 @@ pub struct Monitor {
     shared_images_offset: usize,
 }
 
-impl Monitor {
+impl Monitor<'_> {
     pub fn connect(zm_conf: &ZoneMinderConf, monitor_id: u32) -> Result<Monitor, Box<dyn Error>> {
         let mut db = zm_conf.connect_db()?;
         let dbmon = db.exec_first("SELECT Name, StorageId, Enabled, Width, Height, Colours, ImageBufferCount, AnalysisFPSLimit FROM Monitors WHERE Id = :id",
                                   params! { "id" => monitor_id }
         )?;
         let dbmon: mysql::Row = dbmon.unwrap();
-
-        let dbzone = db.exec_first(
-            "SELECT Name, Type, Coords FROM Zones WHERE MonitorId = :id AND Name LIKE \"aidect%\"",
-            params! { "id" => monitor_id },
-        )?;
-        let dbzone: mysql::Row = dbzone.unwrap();
-
-        let zone = ZoneConfig::parse(
-            &dbzone.get::<String, &str>("Name").unwrap(),
-            &dbzone.get::<String, &str>("Coords").unwrap(),
-        );
 
         let image_buffer_count: usize = dbmon.get("ImageBufferCount").unwrap();
         let width: u32 = dbmon.get("Width").unwrap();
@@ -79,11 +68,12 @@ impl Monitor {
         let shared_images_offset = shared_images_offset + 64 - (shared_images_offset % 64);
 
         Ok(Monitor {
+            monitor_id,
+            zm_conf,
             mmap_path,
             ino: file.metadata()?.ino(),
             file,
 
-            zone,
             width,
             height,
             image_buffer_count: image_buffer_count as u32,
@@ -96,11 +86,32 @@ impl Monitor {
         })
     }
 
+    pub fn get_zone_config(&self) -> Result<ZoneConfig, Box<dyn Error>> {
+        let mut db = self.zm_conf.connect_db()?;
+        let dbzone = db.exec_first(
+            "SELECT Name, Type, Coords FROM Zones WHERE MonitorId = :id AND Name LIKE \"aidect%\"",
+            params! { "id" => self.monitor_id },
+        )?;
+        let dbzone: mysql::Row = dbzone.unwrap();
+
+        Ok(ZoneConfig::parse(
+            &dbzone.get::<String, &str>("Name").unwrap(),
+            &dbzone.get::<String, &str>("Coords").unwrap(),
+        ))
+    }
+
     fn pread<T>(&self, offset: usize) -> io::Result<T> {
         let mut buf = Vec::new();
         buf.resize(size_of::<T>(), 0);
         self.file.read_exact_at(&mut buf, offset as u64)?;
         unsafe { Ok(std::ptr::read(buf.as_ptr() as *const _)) }
+    }
+
+    fn pwrite<T>(&self, offset: usize, data: &T) -> io::Result<()> {
+        let data = unsafe {
+            slice::from_raw_parts(data as *const T as *const u8, size_of::<T>())
+        };
+        self.file.write_all_at(data, offset as u64)
     }
 
     pub fn read(&self) -> io::Result<MonitorState> {
@@ -110,10 +121,47 @@ impl Monitor {
             return Err(io::Error::new(ErrorKind::Other, "Monitor shm is not valid"));
         }
         self.check_file_stale()?;
+        assert_eq!(shared_data.size as usize, size_of::<shm::MonitorSharedData>(), "Invalid SHM shared_data size, incompatible ZoneMinder version");
+        assert_eq!(trigger_data.size as usize, size_of::<shm::MonitorTriggerData>(), "Invalid SHM trigger_data size, incompatible ZoneMinder version");
         Ok(MonitorState {
             shared_data,
             trigger_data,
         })
+    }
+
+    fn set_trigger(&self, cause: &str, description: &str, score: u32) -> io::Result<()> {
+        let cause = cause.as_bytes();
+        let description = description.as_bytes();
+
+        let mut trigger_data = self.read()?.trigger_data;
+        trigger_data.trigger_cause[..cause.len()].copy_from_slice(cause);
+        trigger_data.trigger_text[..description.len()].copy_from_slice(description);
+        trigger_data.trigger_showtext.fill(0);
+        trigger_data.trigger_score = score;
+        // all of this is terribly racy but pwritin' the data before the state change should reduce the odds of problems
+        self.pwrite(self.trigger_data_offset, &trigger_data)?;
+        trigger_data.trigger_state = shm::TriggerState::TriggerOn;
+        self.pwrite(self.trigger_data_offset, &trigger_data)
+    }
+
+    fn reset_trigger(&self) -> io::Result<()> {
+        let mut trigger_data = self.read()?.trigger_data;
+        trigger_data.trigger_cause.fill(0);
+        trigger_data.trigger_text.fill(0);
+        trigger_data.trigger_showtext.fill(0);
+        trigger_data.trigger_score = 0;
+        self.pwrite(self.trigger_data_offset, &trigger_data)?;
+        trigger_data.trigger_state = shm::TriggerState::TriggerOff;
+        self.pwrite(self.trigger_data_offset, &trigger_data)
+    }
+
+    /// Mark at least one frame as an alarm frame with the given score. Wait for event to be created,
+    /// then return event ID. Does not necessarily cause creation of a new event.
+    pub fn trigger(&self, cause: &str, description: &str, score: u32) -> io::Result<u64> {
+        self.set_trigger(cause, description, score)?;
+        std::thread::sleep(Duration::from_millis(100));  // XXX: there really should be a better way for this, yeah?
+        self.reset_trigger()?;
+        Ok(self.read()?.shared_data.last_event_id)
     }
 
     fn check_file_stale(&self) -> io::Result<()> {
@@ -185,7 +233,7 @@ fn zm_format_to_cv_format(format: shm::SubpixelOrder) -> i32 {
 }
 
 pub struct ImageStream<'mon> {
-    monitor: &'mon Monitor,
+    monitor: &'mon Monitor<'mon>,
     last_read_index: u32,
 }
 
@@ -227,6 +275,10 @@ impl MonitorState {
 
     pub fn last_write_index(&self) -> u32 {
         self.shared_data.last_write_index as u32
+    }
+
+    pub fn is_alert(&self) -> bool {
+        self.shared_data.state == shm::MonitorState::Alarm || self.shared_data.state == shm::MonitorState::Alert
     }
 
     fn last_image_token(&self) -> ImageToken {

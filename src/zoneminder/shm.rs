@@ -9,7 +9,7 @@ pub(super) struct MonitorSharedData {
     pub size: u32,
     pub last_write_index: i32,
     pub last_read_index: i32,
-    state: u32,
+    pub state: MonitorState,
     capture_fps: c_double,
     analysis_fps: c_double,
     pub last_event_id: u64,
@@ -36,12 +36,24 @@ pub(super) struct MonitorSharedData {
 
     control_state: [u8; 256],
 
-    alarm_cause: [c_char; 256],
-    video_fifo_path: [c_char; 64],
-    audio_fifo_path: [c_char; 64],
+    alarm_cause: [u8; 256],
+    video_fifo_path: [u8; 64],
+    audio_fifo_path: [u8; 64],
 }
 
 const _: [u8; 760] = [0; size_of::<MonitorSharedData>()];
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[allow(dead_code)]
+pub(super) enum MonitorState {
+    Unknown = 0,
+    Idle,
+    Prealarm,  // Likely when there are alarm frames but not enough to trigger an event
+    Alarm,  // I believe "current" frame is an alarm frame
+    Alert,  // Current frame is not an alarm frame, but we're still in an alarmed state
+    Tape  // I think this is the idle state of Mocord and Record
+}
 
 // zm_rgb.h
 
@@ -80,13 +92,13 @@ pub(super) enum TriggerState {
 #[repr(C)]
 #[allow(dead_code)]
 pub(super) struct MonitorTriggerData {
-    size: u32,
-    trigger_state: TriggerState,
-    trigger_score: u32,
+    pub size: u32,
+    pub trigger_state: TriggerState,
+    pub trigger_score: u32,
     padding: u32,
-    trigger_cause: [c_char; 32],
-    trigger_text: [c_char; 256],
-    trigger_showtext: [c_char; 256],
+    pub trigger_cause: [u8; 32],
+    pub trigger_text: [u8; 256],
+    pub trigger_showtext: [u8; 256],
 }
 
 const _: [u8; 560] = [0; size_of::<MonitorTriggerData>()];
@@ -99,7 +111,7 @@ pub(super) struct MonitorVideoStoreData {
     size: u32,
     padding: u32, // padding here, not in ZM which is wrong
     current_event: u64,
-    event_file: [c_char; 4096],
+    event_file: [u8; 4096],
     recording: timeval,
 }
 

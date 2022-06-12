@@ -98,24 +98,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     let monitor_id = args[1].trim().parse()?;
     let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
     let monitor = zoneminder::Monitor::connect(&zm_conf, monitor_id)?;
+    let zone_config = monitor.get_zone_config()?;
 
     instrumentation::spawn_prometheus_client(9000 + monitor_id as u16);
 
     eprintln!(
         "{}: Picked up zone configuration: {:?}",
-        monitor_id, monitor.zone
+        monitor_id, zone_config
     );
 
-    let bounding_box = monitor.zone.shape.bounding_box();
+    let bounding_box = zone_config.shape.bounding_box();
     eprintln!("{}: Picked up zone bounds {:?}", monitor_id, bounding_box);
 
     let mut yolo = ml::YoloV4Tiny::new(
-        monitor.zone.threshold.unwrap_or(0.5),
-        monitor.zone.size.unwrap_or(256),
+        zone_config.threshold.unwrap_or(0.5),
+        zone_config.size.unwrap_or(256),
         false,
     )?;
 
-    let max_fps = monitor.zone.fps
+    let max_fps = zone_config.fps
         .map(|v| v as f32)
         .unwrap_or(monitor.max_fps);
     let mut pacemaker = Pacemaker::new(max_fps);
@@ -128,8 +129,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         (17, "Dog"),  // dog
     ].into();
 
-    let trigger_id = monitor.zone.trigger.unwrap_or(monitor_id);
-    let mut event_tracker = coalescing::EventTracker::new();
+    let trigger_id = zone_config.trigger.unwrap_or(monitor_id);
+    let mut event_tracker = coalescing::EventTracker::new(monitor_id);
 
     let process_update_event = |update: Option<coalescing::UpdateEvent>| {
         if let Some(update) = update {
@@ -154,23 +155,25 @@ fn main() -> Result<(), Box<dyn Error>> {
             .filter(|d| classes.contains_key(&d.class_id))
             .filter(|d| {
                 (d.bounding_box.width * d.bounding_box.height) as u32
-                    > monitor.zone.min_area.unwrap_or(0)
+                    > zone_config.min_area.unwrap_or(0)
             })
             .collect();
 
         if detections.len() > 0 {
-            println!("{}: Inference result (took {:?}): {:?}", monitor_id, inference_duration, detections);
+            //println!("{}: Inference result (took {:?}): {:?}", monitor_id, inference_duration, detections);
 
             let &d = detections.iter().max_by_key(|d| (d.confidence * 1000.0) as u32).unwrap();  // generally there will only be one anyway
             let score = (d.confidence * 100.0) as u32;
             let description = describe(&classes, &bounding_box, &d);
-            match zoneminder::zmtrigger::trigger_autocancel(trigger_id, "aidect", &description, score) {
-                Ok(event_id) => {
-                    let update = event_tracker.push_detection(d.clone(), event_id);
-                    process_update_event(update);
-                },
-                Err(e) => eprintln!("{}: Failed to trigger zm: {}", trigger_id, e),
+
+            let event_id = if trigger_id != monitor_id {
+                let trigger_monitor = zoneminder::Monitor::connect(&zm_conf, trigger_id)?;
+                trigger_monitor.trigger("aidect", &description, score)?
+            } else {
+                monitor.trigger("aidect", &description, score)?
             };
+            let update = event_tracker.push_detection(d.clone(), event_id);
+            process_update_event(update);
         }
 
         if inference_duration.as_secs_f32() > pacemaker.target_interval {
@@ -209,47 +212,59 @@ mod coalescing {
     use crate::ml::Detection;
 
     struct TrackedEvent {
-        event_id: u32,
+        event_id: u64,
         triggered: Instant,
     }
 
     pub struct UpdateEvent {
-        pub event_id: u32,
+        pub event_id: u64,
         pub detection: Detection,
     }
 
     pub struct EventTracker {
+        monitor_id: u32,
         timeout: Duration,
         current_event: Option<TrackedEvent>,
         detections: Vec<Detection>,
     }
 
     impl EventTracker {
-        pub fn new() -> EventTracker {
+        pub fn new(monitor_id: u32) -> EventTracker {
             EventTracker {
+                monitor_id,
                 timeout: Duration::from_secs(30),
                 current_event: None,
                 detections: Vec::new(),
             }
         }
 
-        pub fn push_detection(&mut self, d: Detection, event_id: u32) -> Option<UpdateEvent> {
+        pub fn push_detection(&mut self, d: Detection, event_id: u64) -> Option<UpdateEvent> {
             let mut update = None;
             if let Some(current_event) = &self.current_event {
-                if current_event.event_id != event_id && self.detections.len() > 0 {
+                if current_event.event_id != event_id {
+                    eprintln!("{}: New event started, flushing old one: {} -> {}", self.monitor_id, current_event.event_id, event_id);
                     update = self.clear();
                 }
             }
+            eprintln!("{}: Pushing detection to event: {} -> {:?}", self.monitor_id, event_id, d);
             self.current_event = Some(TrackedEvent { event_id, triggered: Instant::now() });
             self.detections.push(d);
             update
         }
 
         pub fn check_timeout(&mut self) -> Option<UpdateEvent> {
-            if self.current_event.as_ref().map_or(true, |te| te.triggered.elapsed() < self.timeout) || self.detections.is_empty() {
+            // just check if the event has an end time in the databae, d'uh
+            if self.current_event.is_none() || self.detections.is_empty() {
                 return None;
             }
-            self.clear()
+            if let Some(current_event) = self.current_event.as_ref() {
+                if current_event.triggered.elapsed() < self.timeout {
+                    return None;
+                }
+                eprintln!("{}: Event {} timed out (triggered {:?} ago), flushing", self.monitor_id, current_event.event_id, current_event.triggered);
+                return self.clear();
+            }
+            None
         }
 
         fn clear(&mut self) -> Option<UpdateEvent> {
@@ -258,7 +273,7 @@ mod coalescing {
             if self.detections.len() > 1 {
                 let detection = self.detections.iter().max_by_key(|d| (d.confidence * 1000.0) as u32).unwrap();
                 // TODO: aggregate by classes, annotate counts.
-                println!("Would update event {} with new description {:?}", current_event.event_id, detection);
+                println!("{}: Would update event {} (detections: {:?}) new description {:?}", self.monitor_id, current_event.event_id, self.detections, detection);
                 update = Some(UpdateEvent { event_id: current_event.event_id, detection: detection.clone() });
             }
             self.detections.clear();
