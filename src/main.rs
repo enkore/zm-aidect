@@ -98,7 +98,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let monitor_id = args[1].trim().parse()?;
     let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
     let monitor = zoneminder::Monitor::connect(&zm_conf, monitor_id)?;
-    let zone_config = monitor.get_zone_config()?;
+    let zone_config = zoneminder::ZoneConfig::get_zone_config(&zm_conf, monitor_id)?;
 
     instrumentation::spawn_prometheus_client(9000 + monitor_id as u16);
 
@@ -116,7 +116,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         false,
     )?;
 
-    let max_fps = zone_config.fps.map(|v| v as f32).unwrap_or(monitor.get_max_analysis_fps()?);
+    let max_fps = monitor.get_max_analysis_fps()?;
+    let max_fps = zone_config.fps.map(|v| v as f32).unwrap_or(max_fps);
     let mut pacemaker = Pacemaker::new(max_fps);
 
     let classes: HashMap<i32, &str> = [

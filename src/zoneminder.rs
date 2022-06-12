@@ -60,39 +60,26 @@ impl Monitor<'_> {
         })
     }
 
-    pub fn get_zone_config(&self) -> Result<ZoneConfig, Box<dyn Error>> {
-        let mut db = self.zm_conf.connect_db()?;
-        let dbzone = db.exec_first(
-            "SELECT Name, Type, Coords FROM Zones WHERE MonitorId = :id AND Name LIKE \"aidect%\"",
-            params! { "id" => self.monitor_id },
-        )?;
-        let dbzone: mysql::Row = dbzone.unwrap();
-
-        Ok(ZoneConfig::parse(
-            &dbzone.get::<String, &str>("Name").unwrap(),
-            &dbzone.get::<String, &str>("Coords").unwrap(),
-        ))
-    }
-
     pub fn get_max_analysis_fps(&self) -> Result<f32, Box<dyn Error>> {
-        let config_row = self.query_monitor_config()?;
-        Ok(config_row.get("AnalysisFPSLimit").unwrap())
+        Ok(self.query_monitor_config()?.analysis_fps_limit)
     }
 
     pub fn stream_images(&self) -> Result<ImageStream, Box<dyn Error>> {
         let state = self.read()?;
-        let config_row = self.query_monitor_config()?;
-        let image_buffer_count: u32 = config_row.get("ImageBufferCount").unwrap();
-        let width: u32 = config_row.get("Width").unwrap();
-        let height: u32 = config_row.get("Height").unwrap();
+        let config = self.query_monitor_config()?;
+        let image_buffer_count = config.image_buffer_count;
 
         // now that we have the image buffer size we can figure the dynamic offsets out
-        let shared_timestamps_offset = self.videostore_data_offset + size_of::<shm::MonitorVideoStoreData>();
-        let shared_images_offset = shared_timestamps_offset + image_buffer_count as usize * size_of::<timeval>();
+        let shared_timestamps_offset =
+            self.videostore_data_offset + size_of::<shm::MonitorVideoStoreData>();
+        let shared_images_offset =
+            shared_timestamps_offset + image_buffer_count as usize * size_of::<timeval>();
         let shared_images_offset = shared_images_offset + 64 - (shared_images_offset % 64);
 
         Ok(ImageStream {
-            width, height, image_buffer_count,
+            width: config.width,
+            height: config.height,
+            image_buffer_count,
             monitor: self,
             last_read_index: image_buffer_count,
             image_size: state.shared_data.imagesize,
@@ -196,13 +183,37 @@ impl Monitor<'_> {
         Ok(())
     }
 
-    fn query_monitor_config(&self) -> mysql::Result<mysql::Row> {
+    fn query_monitor_config(&self) -> mysql::Result<MonitorDatabaseConfig> {
         let mut db = self.zm_conf.connect_db()?;
-        let dbmon = db.exec_first("SELECT Name, StorageId, Enabled, Width, Height, Colours, ImageBufferCount, AnalysisFPSLimit FROM Monitors WHERE Id = :id",
-                                  params! { "id" => self.monitor_id }
-        )?;
-        Ok(dbmon.unwrap())
+        Ok(db.exec_map("SELECT Name, StorageId, Enabled, Width, Height, Colours, ImageBufferCount, AnalysisFPSLimit FROM Monitors WHERE Id = :id",
+                                  params! { "id" => self.monitor_id },
+            |(name, storage_id, enabled, width, height, colours, image_buffer_count, analysis_fps_limit)| {
+                MonitorDatabaseConfig {
+                    name,
+                    storage_id,
+                    enabled,
+                    width,
+                    height,
+                    colours,
+                    image_buffer_count,
+                    analysis_fps_limit,
+                }
+            }
+        )?.remove(0))
     }
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+struct MonitorDatabaseConfig {
+    name: String,
+    storage_id: u32,
+    enabled: bool,
+    width: u32,
+    height: u32,
+    colours: u32,
+    image_buffer_count: u32,
+    analysis_fps_limit: f32,
 }
 
 fn convert_to_rgb(format: shm::SubpixelOrder, image: Mat) -> opencv::Result<Mat> {
@@ -273,7 +284,8 @@ impl ImageStream<'_> {
         assert_eq!(self.width * self.height, mat.total() as u32);
         assert_eq!(mat.typ(), zm_format_to_cv_format(self.format));
         self.monitor.check_file_stale()?;
-        let mut slice = unsafe { slice::from_raw_parts_mut(mat.ptr_mut(0)?, self.image_size as usize) };
+        let mut slice =
+            unsafe { slice::from_raw_parts_mut(mat.ptr_mut(0)?, self.image_size as usize) };
         let image_offset = self.shared_images_offset as u64 + self.image_size as u64 * index as u64;
         self.monitor.file.read_exact_at(&mut slice, image_offset)?;
         Ok(())
@@ -328,6 +340,23 @@ pub struct ZoneConfig {
 }
 
 impl ZoneConfig {
+    pub fn get_zone_config(
+        zm_conf: &ZoneMinderConf,
+        monitor_id: u32,
+    ) -> Result<ZoneConfig, Box<dyn Error>> {
+        let mut db = zm_conf.connect_db()?;
+        let dbzone = db.exec_first(
+            "SELECT Name, Type, Coords FROM Zones WHERE MonitorId = :id AND Name LIKE \"aidect%\"",
+            params! { "id" => monitor_id },
+        )?;
+        let dbzone: mysql::Row = dbzone.unwrap();
+
+        Ok(ZoneConfig::parse(
+            &dbzone.get::<String, &str>("Name").unwrap(),
+            &dbzone.get::<String, &str>("Coords").unwrap(),
+        ))
+    }
+
     fn parse(name: &str, coords: &str) -> ZoneConfig {
         let mut config = Self::parse_zone_name(name);
         config.shape = Self::parse_zone_coords(coords);
