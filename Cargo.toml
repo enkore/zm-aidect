@@ -19,3 +19,19 @@ tiny_http = "0.11.0"
 prometheus = { version = "0.13.1", features = ["process"], default-features = false }
 prometheus-static-metric = "0.5.1"
 lazy_static = "1.4.0"
+
+[profile.tagged]
+inherits = "release"
+# -rwxr-xr-x 1 root root 10177232 Jun 13 18:33 zm-aidect
+
+lto = true
+# -rwxr-xr-x 1 root root  6398288 Jun 13 18:25 zm-aidect
+
+opt-level = "z"
+# -rwxr-xr-x 1 root root  6622352 Jun 13 18:27 zm-aidect
+
+strip = true
+# -rwxr-xr-x 1 root root  3512792 Jun 13 18:28 zm-aidect
+
+panic = "abort"
+# -rwxr-xr-x 1 root root  3164632 Jun 13 18:29 zm-aidect
