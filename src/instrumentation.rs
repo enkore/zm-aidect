@@ -21,13 +21,10 @@ fn collect() -> String {
 
 pub fn spawn_prometheus_client(port: u16) {
     std::thread::spawn(move || {
-        rouille::start_server_with_pool(("0.0.0.0", port), Some(1), move |request| {
-            rouille::router!(request,
-                (GET) (/stats) => {
-                    rouille::Response::text(collect())
-                },
-                _ => rouille::Response::empty_404(),
-            )
-        })
+        let server = tiny_http::Server::http(("0.0.0.0", port)).unwrap();
+        for request in server.incoming_requests() {
+            let response = tiny_http::Response::from_string(collect());
+            let _ = request.respond(response);
+        }
     });
 }
