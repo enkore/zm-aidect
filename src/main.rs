@@ -231,6 +231,7 @@ mod coalescing {
 
     struct TrackedEvent {
         event_id: u64,
+        detections: Vec<Detection>,
     }
 
     pub struct UpdateEvent {
@@ -240,28 +241,29 @@ mod coalescing {
 
     pub struct EventTracker {
         current_event: Option<TrackedEvent>,
-        detections: Vec<Detection>,  // shouldn't this kinda be like on TrackedEvent?
     }
 
     impl EventTracker {
         pub fn new() -> EventTracker {
             EventTracker {
                 current_event: None,
-                detections: Vec::new(),
             }
         }
 
         pub fn push_detection(&mut self, d: Detection, event_id: u64) -> Option<UpdateEvent> {
             let mut update = None;
-            if let Some(current_event) = &self.current_event {
+            if let Some(current_event) = self.current_event.as_mut() {
                 if current_event.event_id != event_id {
                     update = self.clear();
+                } else {
+                    current_event.detections.push(d);
+                    return None;
                 }
             }
             self.current_event = Some(TrackedEvent {
                 event_id,
+                detections: vec![d],
             });
-            self.detections.push(d);
             update
         }
 
@@ -269,23 +271,17 @@ mod coalescing {
             if self.current_event.is_none() {
                 return None;
             }
-            let current_event = self.current_event.as_ref().unwrap();
-            let mut update = None;
-            if self.detections.len() > 1 {
-                let detection = self
-                    .detections
-                    .iter()
-                    .max_by_key(|d| (d.confidence * 1000.0) as u32)
-                    .unwrap();
-                // TODO: aggregate by classes, annotate counts.
-                update = Some(UpdateEvent {
-                    event_id: current_event.event_id,
-                    detection: detection.clone(),
-                });
-            }
-            self.detections.clear();
-            self.current_event = None;
-            update
+            let current_event = self.current_event.take().unwrap();
+            let detection = current_event
+                .detections
+                .iter()
+                .max_by_key(|d| (d.confidence * 1000.0) as u32)
+                .unwrap();
+            // TODO: aggregate by classes, annotate counts.
+            Some(UpdateEvent {
+                event_id: current_event.event_id,
+                detection: detection.clone(),
+            })
         }
     }
 }
