@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::error::Error;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use opencv::core::{Mat, Rect};
@@ -120,6 +121,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let max_fps = zone_config.fps.map(|v| v as f32).unwrap_or(max_fps);
     let mut pacemaker = Pacemaker::new(max_fps);
 
+    // watchdog is set to 20x max_fps frame interval
+    let watchdog = Watchdog::new(Duration::from_secs_f32(20.0 / max_fps));
+
     let classes: HashMap<i32, &str> = [
         (1, "Human"), // person
         (3, "Car"),   // car
@@ -203,6 +207,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         instrumentation::INFERENCES.inc();
 
         pacemaker.tick();
+        watchdog.reset();
         instrumentation::FPS.set(pacemaker.current_frequency() as f64);
     }
     Ok(())
@@ -320,5 +325,30 @@ impl Pacemaker {
 
     fn current_frequency(&self) -> f32 {
         self.current_frequency
+    }
+}
+
+struct Watchdog {
+    tx: mpsc::Sender<()>
+}
+
+impl Watchdog {
+    fn new(timeout: Duration) -> Watchdog {
+        let (tx, rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            loop {
+                if let Err(mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(timeout) {
+                    eprintln!("Watchdog expired, terminating.");
+                    std::process::exit(1);
+                }
+            }
+        });
+
+        Watchdog { tx }
+    }
+
+    fn reset(&self) -> () {
+        self.tx.send(()).unwrap()
     }
 }
