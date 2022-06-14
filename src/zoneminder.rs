@@ -101,8 +101,8 @@ impl Monitor<'_> {
             let state = self.read()?.shared_data.state;
             // Alarm sorta implies that we just triggered an alarm frame, while
             // Alert sorta implies there's an on-going event.
-            // In any case last_event_id ought to usually be "our" event ID for this alarmation.
-            if state == shm::MonitorState::Alarm || state == shm::MonitorState::Alert {
+            // Wait for Alarm state to become active so that the frame is marked.
+            if state == shm::MonitorState::Alarm {
                 break;
             }
             std::thread::sleep(Duration::from_millis(poll_interval));
