@@ -28,6 +28,18 @@ pub fn update_event_notes(
     )
 }
 
+pub trait MonitorTrait<'this> {  // for lack of a better term
+    type ImageIterator: Iterator<Item=Result<Mat, Box<dyn Error>>>;
+
+    fn get_max_analysis_fps(&self) -> Result<f32, Box<dyn Error>>;  // this should not be here.
+
+    fn stream_images(&'this self) -> Result<Self::ImageIterator, Box<dyn Error>>;
+
+    fn is_idle(&self) -> io::Result<bool>;  // inconsistent error returns
+
+    fn trigger(&self, cause: &str, description: &str, score: u32) -> io::Result<u64>;
+}
+
 pub struct Monitor<'zmconf> {
     monitor_id: u32,
     zm_conf: &'zmconf ZoneMinderConf,
@@ -40,31 +52,14 @@ pub struct Monitor<'zmconf> {
     videostore_data_offset: usize,
 }
 
-impl Monitor<'_> {
-    pub fn connect(zm_conf: &ZoneMinderConf, monitor_id: u32) -> Result<Monitor, Box<dyn Error>> {
-        let mmap_path = format!("{}/zm.mmap.{}", zm_conf.mmap_path, monitor_id);
-        let file = OpenOptions::new().read(true).write(true).open(&mmap_path)?;
+impl<'this> MonitorTrait<'this> for Monitor<'this> {
+    type ImageIterator = ImageStream<'this>;
 
-        let trigger_data_offset = size_of::<shm::MonitorSharedData>();
-        let videostore_data_offset = trigger_data_offset + size_of::<shm::MonitorTriggerData>();
-
-        Ok(Monitor {
-            monitor_id,
-            zm_conf,
-            mmap_path,
-            ino: file.metadata()?.ino(),
-            file,
-
-            trigger_data_offset,
-            videostore_data_offset,
-        })
-    }
-
-    pub fn get_max_analysis_fps(&self) -> Result<f32, Box<dyn Error>> {
+    fn get_max_analysis_fps(&self) -> Result<f32, Box<dyn Error>> {
         Ok(self.query_monitor_config()?.analysis_fps_limit)
     }
 
-    pub fn stream_images(&self) -> Result<ImageStream, Box<dyn Error>> {
+    fn stream_images(&'this self) -> Result<Self::ImageIterator, Box<dyn Error>> {
         let state = self.read()?;
         let config = self.query_monitor_config()?;
         let image_buffer_count = config.image_buffer_count;
@@ -88,13 +83,13 @@ impl Monitor<'_> {
         })
     }
 
-    pub fn is_idle(&self) -> io::Result<bool> {
+    fn is_idle(&self) -> io::Result<bool> {
         Ok(self.read()?.shared_data.state == shm::MonitorState::Idle)
     }
 
     /// Mark at least one frame as an alarm frame with the given score. Wait for event to be created,
     /// then return event ID. Does not necessarily cause creation of a new event.
-    pub fn trigger(&self, cause: &str, description: &str, score: u32) -> io::Result<u64> {
+    fn trigger(&self, cause: &str, description: &str, score: u32) -> io::Result<u64> {
         let poll_interval = 10;
         self.set_trigger(cause, description, score)?;
         for n in 0.. {
@@ -112,6 +107,27 @@ impl Monitor<'_> {
         }
         self.reset_trigger()?;
         Ok(self.read()?.shared_data.last_event_id)
+    }
+}
+
+impl Monitor<'_> {
+    pub fn connect(zm_conf: &ZoneMinderConf, monitor_id: u32) -> Result<Monitor, Box<dyn Error>> {
+        let mmap_path = format!("{}/zm.mmap.{}", zm_conf.mmap_path, monitor_id);
+        let file = OpenOptions::new().read(true).write(true).open(&mmap_path)?;
+
+        let trigger_data_offset = size_of::<shm::MonitorSharedData>();
+        let videostore_data_offset = trigger_data_offset + size_of::<shm::MonitorTriggerData>();
+
+        Ok(Monitor {
+            monitor_id,
+            zm_conf,
+            mmap_path,
+            ino: file.metadata()?.ino(),
+            file,
+
+            trigger_data_offset,
+            videostore_data_offset,
+        })
     }
 
     fn set_trigger(&self, cause: &str, description: &str, score: u32) -> io::Result<()> {

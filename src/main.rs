@@ -11,7 +11,7 @@ mod ml;
 mod zoneminder;
 
 use ml::Detection;
-use zoneminder::Bounding;
+use zoneminder::{Bounding, MonitorTrait};
 
 fn main() -> Result<(), Box<dyn Error>> {
     /*
