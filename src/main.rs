@@ -119,10 +119,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let max_fps = monitor.get_max_analysis_fps()?;
     let max_fps = zone_config.fps.map(|v| v as f32).unwrap_or(max_fps);
-    let mut pacemaker = Pacemaker::new(max_fps);
+    let mut pacemaker = RealtimePacemaker::new(max_fps);
 
     // watchdog is set to 20x max_fps frame interval
-    let watchdog = Watchdog::new(Duration::from_secs_f32(20.0 / max_fps));
+    let watchdog = ThreadedWatchdog::new(Duration::from_secs_f32(20.0 / max_fps));
 
     let classes: HashMap<i32, &str> = [
         (1, "Human"), // person
@@ -286,23 +286,30 @@ mod coalescing {
     }
 }
 
-struct Pacemaker {
+trait Pacemaker {
+    fn tick(&mut self);
+    fn current_frequency(&self) -> f32;
+}
+
+struct RealtimePacemaker {
     target_interval: f32,
     last_tick: Option<Instant>,
     avg: simple_moving_average::NoSumSMA<f32, f32, 10>,
     current_frequency: f32,
 }
 
-impl Pacemaker {
-    fn new(frequency: f32) -> Pacemaker {
-        Pacemaker {
+impl RealtimePacemaker {
+    fn new(frequency: f32) -> RealtimePacemaker {
+        RealtimePacemaker {
             target_interval: 1.0f32 / frequency,
             last_tick: None,
             avg: simple_moving_average::NoSumSMA::new(),
             current_frequency: 0.0,
         }
     }
+}
 
+impl Pacemaker for RealtimePacemaker {
     fn tick(&mut self) {
         let now = Instant::now();
         if let Some(last_iteration) = self.last_tick {
@@ -324,12 +331,16 @@ impl Pacemaker {
     }
 }
 
-struct Watchdog {
+trait Watchdog {
+    fn reset(&self) -> ();
+}
+
+struct ThreadedWatchdog {
     tx: mpsc::Sender<()>
 }
 
-impl Watchdog {
-    fn new(timeout: Duration) -> Watchdog {
+impl ThreadedWatchdog {
+    fn new(timeout: Duration) -> ThreadedWatchdog {
         let (tx, rx) = mpsc::channel();
 
         std::thread::spawn(move || {
@@ -341,9 +352,11 @@ impl Watchdog {
             }
         });
 
-        Watchdog { tx }
+        ThreadedWatchdog { tx }
     }
+}
 
+impl Watchdog for ThreadedWatchdog {
     fn reset(&self) -> () {
         self.tx.send(()).unwrap()
     }
