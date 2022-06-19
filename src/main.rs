@@ -311,19 +311,23 @@ impl RealtimePacemaker {
 
 impl Pacemaker for RealtimePacemaker {
     fn tick(&mut self) {
-        let now = Instant::now();
         if let Some(last_iteration) = self.last_tick {
-            let real_interval = (now - last_iteration).as_secs_f32();
-            let delta = self.target_interval - real_interval;
-            self.avg.add_sample(delta);
-            self.current_frequency = 1.0f32 / real_interval;
+            let now = Instant::now();
+            let frame_duration = (now - last_iteration).as_secs_f32();  // how long the paced workload ran
+            // smoothing using moving average
+            self.avg.add_sample(frame_duration);
+            let average_duration = self.avg.get_average();
 
-            let sleep_time = self.avg.get_average();
-            if sleep_time > 0.0 {
-                std::thread::sleep(Duration::from_secs_f32(sleep_time));
+            let sleep_duration = self.target_interval - average_duration;
+            if sleep_duration > 0.0 {
+                std::thread::sleep(Duration::from_secs_f32(sleep_duration));
             }
+
+            // calculate current frequency from the tick interval (workload + sleeping)
+            let tick_interval = Instant::now() - last_iteration;
+            self.current_frequency = 1.0f32 / tick_interval.as_secs_f32();
         }
-        self.last_tick = Some(now);
+        self.last_tick = Some(Instant::now());
     }
 
     fn current_frequency(&self) -> f32 {
