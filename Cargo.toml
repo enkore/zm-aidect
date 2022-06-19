@@ -17,7 +17,6 @@ mysql = { version = "22.1.0", default-features = false }
 flate2 = { version = "*", default-features = false, features = ["zlib"] }
 tiny_http = "0.11.0"
 prometheus = { version = "0.13.1", features = ["process"], default-features = false }
-prometheus-static-metric = "0.5.1"
 lazy_static = "1.4.0"
 
 [profile.tagged]
