@@ -100,6 +100,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
     let monitor = zoneminder::Monitor::connect(&zm_conf, monitor_id)?;
     let zone_config = zoneminder::ZoneConfig::get_zone_config(&zm_conf, monitor_id)?;
+    let monitor_config = zoneminder::MonitorDatabaseConfig::query(&zm_conf, monitor_id)?;
 
     instrumentation::spawn_prometheus_client(9000 + monitor_id as u16);
 
@@ -117,9 +118,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         false,
     )?;
 
-    let max_fps = monitor.get_max_analysis_fps()?;
+    let max_fps = monitor_config.analysis_fps_limit;
     let max_fps = zone_config.fps.map(|v| v as f32).unwrap_or(max_fps);
     let mut pacemaker = RealtimePacemaker::new(max_fps);
+    let trigger_id = zone_config.trigger.unwrap_or(monitor_id);
+    let mut event_tracker = coalescing::EventTracker::new();
 
     // watchdog is set to 20x max_fps frame interval
     let watchdog = ThreadedWatchdog::new(Duration::from_secs_f32(20.0 / max_fps));
@@ -132,9 +135,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         (17, "Dog"),  // dog
     ]
     .into();
-
-    let trigger_id = zone_config.trigger.unwrap_or(monitor_id);
-    let mut event_tracker = coalescing::EventTracker::new();
 
     let process_update_event = |update: Option<coalescing::UpdateEvent>| {
         if let Some(update) = update {
@@ -327,6 +327,7 @@ impl Pacemaker for RealtimePacemaker {
             let tick_interval = Instant::now() - last_iteration;
             self.current_frequency = 1.0f32 / tick_interval.as_secs_f32();
         }
+        // store time after we slept
         self.last_tick = Some(Instant::now());
     }
 

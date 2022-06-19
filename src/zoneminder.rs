@@ -31,8 +31,6 @@ pub fn update_event_notes(
 pub trait MonitorTrait<'this> {  // for lack of a better term
     type ImageIterator: Iterator<Item=Result<Mat, Box<dyn Error>>>;
 
-    fn get_max_analysis_fps(&self) -> Result<f32, Box<dyn Error>>;  // this should not be here.
-
     fn stream_images(&'this self) -> Result<Self::ImageIterator, Box<dyn Error>>;
 
     fn is_idle(&self) -> io::Result<bool>;  // inconsistent error returns
@@ -55,13 +53,9 @@ pub struct Monitor<'zmconf> {
 impl<'this> MonitorTrait<'this> for Monitor<'this> {
     type ImageIterator = ImageStream<'this>;
 
-    fn get_max_analysis_fps(&self) -> Result<f32, Box<dyn Error>> {
-        Ok(self.query_monitor_config()?.analysis_fps_limit)
-    }
-
     fn stream_images(&'this self) -> Result<Self::ImageIterator, Box<dyn Error>> {
         let state = self.read()?;
-        let config = self.query_monitor_config()?;
+        let config = MonitorDatabaseConfig::query(self.zm_conf, self.monitor_id)?;
         let image_buffer_count = config.image_buffer_count;
 
         // now that we have the image buffer size we can figure the dynamic offsets out
@@ -202,38 +196,40 @@ impl Monitor<'_> {
         }
         Ok(())
     }
-
-    fn query_monitor_config(&self) -> mysql::Result<MonitorDatabaseConfig> {
-        let mut db = self.zm_conf.connect_db()?;
-        Ok(db.exec_map("SELECT Name, StorageId, Enabled, Width, Height, Colours, ImageBufferCount, AnalysisFPSLimit FROM Monitors WHERE Id = :id",
-                                  params! { "id" => self.monitor_id },
-            |(name, storage_id, enabled, width, height, colours, image_buffer_count, analysis_fps_limit)| {
-                MonitorDatabaseConfig {
-                    name,
-                    storage_id,
-                    enabled,
-                    width,
-                    height,
-                    colours,
-                    image_buffer_count,
-                    analysis_fps_limit,
-                }
-            }
-        )?.remove(0))
-    }
 }
 
 #[derive(Debug)]
 #[allow(dead_code)]
-struct MonitorDatabaseConfig {
-    name: String,
+pub struct MonitorDatabaseConfig {
+    pub name: String,
     storage_id: u32,
     enabled: bool,
     width: u32,
     height: u32,
     colours: u32,
     image_buffer_count: u32,
-    analysis_fps_limit: f32,
+    pub analysis_fps_limit: f32,
+}
+
+impl MonitorDatabaseConfig {
+    pub fn query(zm_conf: &ZoneMinderConf, monitor_id: u32) -> Result<MonitorDatabaseConfig, Box<dyn Error>> {
+        let mut db = zm_conf.connect_db()?;
+        Ok(db.exec_map("SELECT Name, StorageId, Enabled, Width, Height, Colours, ImageBufferCount, AnalysisFPSLimit FROM Monitors WHERE Id = :id",
+                       params! { "id" => monitor_id },
+                       |(name, storage_id, enabled, width, height, colours, image_buffer_count, analysis_fps_limit)| {
+                           MonitorDatabaseConfig {
+                               name,
+                               storage_id,
+                               enabled,
+                               width,
+                               height,
+                               colours,
+                               image_buffer_count,
+                               analysis_fps_limit,
+                           }
+                       }
+        )?.remove(0))
+    }
 }
 
 fn convert_to_rgb(format: shm::SubpixelOrder, image: Mat) -> opencv::Result<Mat> {
