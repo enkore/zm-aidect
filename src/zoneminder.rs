@@ -18,7 +18,7 @@ mod shm;
 
 pub trait MonitorTrait<'this> {
     // for lack of a better term
-    type ImageIterator: Iterator<Item = Result<Mat, Box<dyn Error>>>;
+    type ImageIterator: Iterator<Item = Result<Image, Box<dyn Error>>>;
 
     fn stream_images(&'this self) -> Result<Self::ImageIterator, Box<dyn Error>>;
 
@@ -187,20 +187,6 @@ impl Monitor<'_> {
     }
 }
 
-fn convert_to_rgb(format: shm::SubpixelOrder, image: Mat) -> opencv::Result<Mat> {
-    let mut rgb_image = Mat::default();
-    let conversion = match format {
-        shm::SubpixelOrder::NONE => opencv::imgproc::COLOR_GRAY2RGB,
-        shm::SubpixelOrder::RGB => return Ok(image),
-        shm::SubpixelOrder::BGR => opencv::imgproc::COLOR_BGR2RGB,
-        shm::SubpixelOrder::BGRA => opencv::imgproc::COLOR_BGRA2RGB,
-        shm::SubpixelOrder::RGBA => opencv::imgproc::COLOR_RGBA2RGB,
-        _ => panic!("Unsupported pixel format: {:?}", format),
-    };
-    opencv::imgproc::cvt_color(&image, &mut rgb_image, conversion, 0)?;
-    Ok(rgb_image)
-}
-
 fn zm_format_to_cv_format(format: shm::SubpixelOrder) -> i32 {
     match format {
         shm::SubpixelOrder::NONE => opencv::core::CV_8UC1,
@@ -210,6 +196,61 @@ fn zm_format_to_cv_format(format: shm::SubpixelOrder) -> i32 {
         shm::SubpixelOrder::RGBA => opencv::core::CV_8UC4,
         shm::SubpixelOrder::ABGR => opencv::core::CV_8UC4,
         shm::SubpixelOrder::ARGB => opencv::core::CV_8UC4,
+    }
+}
+
+pub struct Image {
+    image: Mat,
+    format: shm::SubpixelOrder,
+}
+
+impl Image {
+    pub fn convert_to_rgb24(self) -> opencv::Result<Mat> {
+        let conversion = match self.format {
+            shm::SubpixelOrder::NONE => Some(opencv::imgproc::COLOR_GRAY2RGB),
+            shm::SubpixelOrder::RGB => None,
+            shm::SubpixelOrder::BGR => Some(opencv::imgproc::COLOR_BGR2RGB),
+            shm::SubpixelOrder::BGRA => Some(opencv::imgproc::COLOR_BGRA2RGB),
+            shm::SubpixelOrder::RGBA => Some(opencv::imgproc::COLOR_RGBA2RGB),
+            _ => panic!("Unsupported pixel format: {:?}", self.format),
+        };
+        self.convert(conversion)
+    }
+
+    #[allow(dead_code)]
+    pub fn convert_to_rgb32(self) -> opencv::Result<Mat> {
+        let conversion = match self.format {
+            shm::SubpixelOrder::NONE => Some(opencv::imgproc::COLOR_GRAY2RGBA),
+            shm::SubpixelOrder::RGB => Some(opencv::imgproc::COLOR_RGB2RGBA),
+            shm::SubpixelOrder::BGR => Some(opencv::imgproc::COLOR_BGR2RGBA),
+            shm::SubpixelOrder::BGRA => Some(opencv::imgproc::COLOR_BGRA2RGBA),
+            shm::SubpixelOrder::RGBA => None,
+            _ => panic!("Unsupported pixel format: {:?}", self.format),
+        };
+        self.convert(conversion)
+    }
+
+    #[allow(dead_code)]
+    pub fn convert_to_gray(self) -> opencv::Result<Mat> {
+        let conversion = match self.format {
+            shm::SubpixelOrder::NONE => None,
+            shm::SubpixelOrder::RGB => Some(opencv::imgproc::COLOR_RGB2GRAY),
+            shm::SubpixelOrder::BGR => Some(opencv::imgproc::COLOR_BGR2GRAY),
+            shm::SubpixelOrder::BGRA => Some(opencv::imgproc::COLOR_BGRA2GRAY),
+            shm::SubpixelOrder::RGBA => Some(opencv::imgproc::COLOR_RGBA2GRAY),
+            _ => panic!("Unsupported pixel format: {:?}", self.format),
+        };
+        self.convert(conversion)
+    }
+
+    fn convert(self, conversion: Option<i32>) -> opencv::Result<Mat> {
+        if let Some(conversion) = conversion {
+            let mut rgb_image = Mat::default();
+            // You could do this in-place as well, though it's probably not worth it
+            opencv::imgproc::cvt_color(&self.image, &mut rgb_image, conversion, 0)?;
+            return Ok(rgb_image);
+        }
+        Ok(self.image)
     }
 }
 
@@ -225,7 +266,7 @@ pub struct ImageStream<'mon> {
 }
 
 impl ImageStream<'_> {
-    fn wait_for_image(&mut self) -> Result<Mat, Box<dyn Error>> {
+    fn wait_for_image(&mut self) -> Result<Image, Box<dyn Error>> {
         loop {
             let state = self.monitor.read()?;
             let last_write_index = state.shared_data.last_write_index as u32;
@@ -234,7 +275,7 @@ impl ImageStream<'_> {
             {
                 self.last_read_index = last_write_index;
                 let image = self.read_image(last_write_index)?;
-                return Ok(convert_to_rgb(self.format, image)?);
+                return Ok(Image { image, format: self.format });
             }
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -264,7 +305,7 @@ impl ImageStream<'_> {
 }
 
 impl Iterator for ImageStream<'_> {
-    type Item = Result<Mat, Box<dyn Error>>;
+    type Item = Result<Image, Box<dyn Error>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         Some(self.wait_for_image())

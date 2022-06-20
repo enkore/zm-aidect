@@ -209,7 +209,7 @@ fn run(monitor_id: u32) -> Result<(), Box<dyn Error>> {
     };
 
     for image in monitor.stream_images()? {
-        let image = image?;
+        let image = image?.convert_to_rgb24()?;
         // TODO: blank remaining area outside zone polygon
         let image = Mat::roi(&image, bounding_box)?;
 
