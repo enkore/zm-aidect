@@ -3,18 +3,19 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use log::{debug, error, info, warn};
 
 use clap::{Parser, Subcommand};
+use log::{debug, error, info, warn};
 use opencv::core::{Mat, Rect};
 use simple_moving_average::SMA;
+
+use crate::ml::Detection;
+use crate::zoneminder::db::Bounding;
+use crate::zoneminder::MonitorTrait;
 
 mod instrumentation;
 mod ml;
 mod zoneminder;
-
-use ml::Detection;
-use zoneminder::{Bounding, MonitorTrait};
 
 #[derive(Parser, Debug)]
 #[clap(disable_help_subcommand = true)]
@@ -38,7 +39,6 @@ enum Mode {
         /// Zoneminder monitor ID
         #[clap(value_parser)]
         monitor_id: u32,
-
         // TODO: instrumentation listen address, base port, some way to disable it (=> no default?)
     },
     Test {
@@ -157,8 +157,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn run(monitor_id: u32) -> Result<(), Box<dyn Error>> {
     let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
     let monitor = zoneminder::Monitor::connect(&zm_conf, monitor_id)?;
-    let zone_config = zoneminder::ZoneConfig::get_zone_config(&zm_conf, monitor_id)?;
-    let monitor_config = zoneminder::MonitorDatabaseConfig::query(&zm_conf, monitor_id)?;
+    let zone_config = zoneminder::db::ZoneConfig::get_zone_config(&zm_conf, monitor_id)?;
+    let monitor_config = zoneminder::db::MonitorDatabaseConfig::query(&zm_conf, monitor_id)?;
 
     instrumentation::spawn_prometheus_client(9000 + monitor_id as u16);
 
@@ -197,7 +197,8 @@ fn run(monitor_id: u32) -> Result<(), Box<dyn Error>> {
     let process_update_event = |update: Option<coalescing::UpdateEvent>| {
         if let Some(update) = update {
             let description = describe(&classes, &bounding_box, &update.detection);
-            if let Err(e) = zoneminder::update_event_notes(&zm_conf, update.event_id, &description)
+            if let Err(e) =
+                zoneminder::db::update_event_notes(&zm_conf, update.event_id, &description)
             {
                 error!(
                     "{}: Failed to update event {} notes: {}",
@@ -289,6 +290,7 @@ fn describe(classes: &HashMap<i32, &str>, bounding_box: &Rect, d: &Detection) ->
 
 mod coalescing {
     use log::trace;
+
     use crate::ml::Detection;
 
     struct TrackedEvent {
@@ -341,7 +343,12 @@ mod coalescing {
                 .max_by_key(|d| (d.confidence * 1000.0) as u32)
                 .unwrap();
             // TODO: aggregate by classes, annotate counts.
-            trace!("Coalesce {} with {:?} to {:?}", current_event.event_id, current_event.detections, detection);
+            trace!(
+                "Coalesce {} with {:?} to {:?}",
+                current_event.event_id,
+                current_event.detections,
+                detection
+            );
             Some(UpdateEvent {
                 event_id: current_event.event_id,
                 detection: detection.clone(),
@@ -377,8 +384,8 @@ impl Pacemaker for RealtimePacemaker {
     fn tick(&mut self) {
         if let Some(last_iteration) = self.last_tick {
             let now = Instant::now();
-            let frame_duration = (now - last_iteration).as_secs_f32();  // how long the paced workload ran
-            // smoothing using moving average
+            let frame_duration = (now - last_iteration).as_secs_f32(); // how long the paced workload ran
+                                                                       // smoothing using moving average
             self.avg.add_sample(frame_duration);
             let average_duration = self.avg.get_average();
 
@@ -404,19 +411,17 @@ trait Watchdog {
 }
 
 struct ThreadedWatchdog {
-    tx: mpsc::Sender<()>
+    tx: mpsc::Sender<()>,
 }
 
 impl ThreadedWatchdog {
     fn new(timeout: Duration) -> ThreadedWatchdog {
         let (tx, rx) = mpsc::channel();
 
-        std::thread::spawn(move || {
-            loop {
-                if let Err(mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(timeout) {
-                    error!("Watchdog expired, terminating.");
-                    std::process::exit(1);
-                }
+        std::thread::spawn(move || loop {
+            if let Err(mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(timeout) {
+                error!("Watchdog expired, terminating.");
+                std::process::exit(1);
             }
         });
 

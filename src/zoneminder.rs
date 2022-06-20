@@ -1,7 +1,3 @@
-use libc::timeval;
-use mysql::params;
-use mysql::prelude::Queryable;
-use opencv::core::{Mat, MatTrait, MatTraitConst, Rect};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::{File, OpenOptions};
@@ -10,31 +6,23 @@ use std::mem::size_of;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::time::Duration;
 use std::{fs, io, slice};
-use log::error;
 
+use libc::timeval;
+use log::error;
+use opencv::core::{Mat, MatTrait, MatTraitConst};
+
+use crate::zoneminder::db::MonitorDatabaseConfig;
+
+pub mod db;
 mod shm;
 
-pub fn update_event_notes(
-    zm_conf: &ZoneMinderConf,
-    event_id: u64,
-    notes: &str,
-) -> mysql::Result<()> {
-    let mut db = zm_conf.connect_db()?;
-    db.exec_drop(
-        "UPDATE Events SET Notes = :notes WHERE Id = :id",
-        params! {
-            "id" => event_id,
-            "notes" => notes,
-        },
-    )
-}
-
-pub trait MonitorTrait<'this> {  // for lack of a better term
-    type ImageIterator: Iterator<Item=Result<Mat, Box<dyn Error>>>;
+pub trait MonitorTrait<'this> {
+    // for lack of a better term
+    type ImageIterator: Iterator<Item = Result<Mat, Box<dyn Error>>>;
 
     fn stream_images(&'this self) -> Result<Self::ImageIterator, Box<dyn Error>>;
 
-    fn is_idle(&self) -> io::Result<bool>;  // inconsistent error returns
+    fn is_idle(&self) -> io::Result<bool>; // inconsistent error returns
 
     fn trigger(&self, cause: &str, description: &str, score: u32) -> io::Result<u64>;
 }
@@ -199,40 +187,6 @@ impl Monitor<'_> {
     }
 }
 
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct MonitorDatabaseConfig {
-    pub name: String,
-    storage_id: u32,
-    enabled: bool,
-    width: u32,
-    height: u32,
-    colours: u32,
-    image_buffer_count: u32,
-    pub analysis_fps_limit: f32,
-}
-
-impl MonitorDatabaseConfig {
-    pub fn query(zm_conf: &ZoneMinderConf, monitor_id: u32) -> Result<MonitorDatabaseConfig, Box<dyn Error>> {
-        let mut db = zm_conf.connect_db()?;
-        Ok(db.exec_map("SELECT Name, StorageId, Enabled, Width, Height, Colours, ImageBufferCount, AnalysisFPSLimit FROM Monitors WHERE Id = :id",
-                       params! { "id" => monitor_id },
-                       |(name, storage_id, enabled, width, height, colours, image_buffer_count, analysis_fps_limit)| {
-                           MonitorDatabaseConfig {
-                               name,
-                               storage_id,
-                               enabled,
-                               width,
-                               height,
-                               colours,
-                               image_buffer_count,
-                               analysis_fps_limit,
-                           }
-                       }
-        )?.remove(0))
-    }
-}
-
 fn convert_to_rgb(format: shm::SubpixelOrder, image: Mat) -> opencv::Result<Mat> {
     let mut rgb_image = Mat::default();
     let conversion = match format {
@@ -322,98 +276,6 @@ struct MonitorState {
     trigger_data: shm::MonitorTriggerData,
 }
 
-pub type ZoneShape = Vec<(i32, i32)>;
-
-pub trait Bounding {
-    fn bounding_box(&self) -> Rect;
-}
-
-impl Bounding for ZoneShape {
-    fn bounding_box(&self) -> Rect {
-        let min_x = self.iter().map(|xy| xy.0).min().unwrap();
-        let min_y = self.iter().map(|xy| xy.1).min().unwrap();
-        let max_x = self.iter().map(|xy| xy.0).max().unwrap();
-        let max_y = self.iter().map(|xy| xy.1).max().unwrap();
-
-        let width = max_x - min_x;
-        let height = max_y - min_y;
-        Rect {
-            x: min_x,
-            y: min_y,
-            width,
-            height,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct ZoneConfig {
-    pub size: Option<u32>,
-    pub threshold: Option<f32>,
-    pub shape: ZoneShape,
-    pub trigger: Option<u32>,
-    pub fps: Option<u32>,
-    pub min_area: Option<u32>,
-}
-
-impl ZoneConfig {
-    pub fn get_zone_config(
-        zm_conf: &ZoneMinderConf,
-        monitor_id: u32,
-    ) -> Result<ZoneConfig, Box<dyn Error>> {
-        let mut db = zm_conf.connect_db()?;
-        let dbzone = db.exec_first(
-            "SELECT Name, Type, Coords FROM Zones WHERE MonitorId = :id AND Name LIKE \"aidect%\"",
-            params! { "id" => monitor_id },
-        )?;
-        let dbzone: mysql::Row = dbzone.unwrap();
-
-        Ok(ZoneConfig::parse(
-            &dbzone.get::<String, &str>("Name").unwrap(),
-            &dbzone.get::<String, &str>("Coords").unwrap(),
-        ))
-    }
-
-    fn parse(name: &str, coords: &str) -> ZoneConfig {
-        let mut config = Self::parse_zone_name(name);
-        config.shape = Self::parse_zone_coords(coords);
-        config
-    }
-
-    fn parse_zone_name(zone_name: &str) -> ZoneConfig {
-        let keys: HashMap<&str, &str> = zone_name
-            .split_ascii_whitespace()
-            .skip(1)
-            .map(|item| item.split_once('='))
-            .filter_map(|x| x)
-            .collect();
-
-        let get_int = |key| keys.get(key).and_then(|v| v.trim().parse::<u32>().ok());
-
-        ZoneConfig {
-            shape: Vec::new(),
-            threshold: keys
-                .get("Threshold")
-                .and_then(|v| v.trim().parse::<f32>().ok())
-                .map(|v| v / 100.0),
-            size: get_int("Size"),
-            trigger: get_int("Trigger"),
-            fps: get_int("FPS"),
-            min_area: get_int("MinArea"),
-        }
-    }
-
-    fn parse_zone_coords(coords: &str) -> ZoneShape {
-        let parse = |v: &str| v.trim().parse::<i32>().unwrap();
-        coords
-            .split_ascii_whitespace()
-            .map(|point| point.split_once(','))
-            .filter_map(|v| v)
-            .map(|(x, y)| (parse(x), parse(y)))
-            .collect()
-    }
-}
-
 #[derive(Debug)]
 pub struct ZoneMinderConf {
     db_host: String,
@@ -456,17 +318,6 @@ impl ZoneMinderConf {
     }
 }
 
-impl ZoneMinderConf {
-    fn connect_db(&self) -> mysql::Result<mysql::Conn> {
-        let builder = mysql::OptsBuilder::new()
-            .ip_or_hostname(Some(&self.db_host))
-            .db_name(Some(&self.db_name))
-            .user(Some(&self.db_user))
-            .pass(Some(&self.db_password));
-        mysql::Conn::new(builder)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,30 +347,5 @@ ZM_PATH_MAP=/dev/shm
         assert_eq!(parsed.db_user, "zmuser");
         assert_eq!(parsed.db_password, "zmpass");
         assert_eq!(parsed.mmap_path, "/dev/shm");
-    }
-
-    #[test]
-    fn test_parse_zone_name_basic() {
-        let zone_name = "aidect";
-        let parsed = ZoneConfig::parse_zone_name(zone_name);
-        assert_eq!(parsed.shape.len(), 0);
-        assert_eq!(parsed.threshold, None);
-        assert_eq!(parsed.size, None);
-    }
-
-    #[test]
-    fn test_parse_zone_name() {
-        let zone_name = "aidect Size=128 Threshold=50";
-        let parsed = ZoneConfig::parse_zone_name(zone_name);
-        assert_eq!(parsed.shape.len(), 0);
-        assert_eq!(parsed.threshold, Some(0.5));
-        assert_eq!(parsed.size, Some(128));
-    }
-
-    #[test]
-    fn test_parse_zone_coords() {
-        let coords = "123,56 899,41 687,425";
-        let parsed = ZoneConfig::parse_zone_coords(coords);
-        assert_eq!(parsed, vec![(123, 56), (899, 41), (687, 425)]);
     }
 }
