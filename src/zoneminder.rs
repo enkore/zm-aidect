@@ -10,6 +10,7 @@ use std::mem::size_of;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::time::Duration;
 use std::{fs, io, slice};
+use log::error;
 
 mod shm;
 
@@ -96,7 +97,7 @@ impl<'this> MonitorTrait<'this> for Monitor<'this> {
             }
             std::thread::sleep(Duration::from_millis(poll_interval));
             if n > 500 {
-                eprintln!("Waited {} ms for zoneminder to notice our bulgy wulgy, giving up and canceling it :c", n * poll_interval);
+                error!("Waited {} ms for zoneminder to notice our bulgy wulgy, giving up and canceling it :c", n * poll_interval);
             }
         }
         self.reset_trigger()?;

@@ -43,7 +43,7 @@ should run on (using `3` as the monitor ID; repeat these commands for every moni
          Memory: 60.7M
             CPU: 3.141s
          CGroup: /system.slice/system-zm\x2daidect.slice/zm-aidect@3.service
-                 └─293563 /zm-aidect/zm-aidect 3
+                 └─293563 /zm-aidect/zm-aidect run 3
 
 zm-aidect is pretty turnkey beyond this. You configure it ZoneMinder's web interface by adding a zone
 named "aidect". Objects will be detected if within the zone. You can additionally tweak various settings by
@@ -83,13 +83,15 @@ zm-aidect than it does with traditional motion detection.
 
 ### Testing changes
 
-You can also run `zm-aidect --test <MONITOR-ID>`, which will go through the startup, perform a single inference
+You can also run `zm-aidect test <MONITOR-ID>`, which will go through the startup, perform a single inference
 to ensure the process works, trigger an event, and exit. Some diagnostics will be printed as well, like if and which
 hardware accelerator is used by zm-aidect. This can be used to confirm that the settings are applied as wanted.
 
-Run `zm-aidect --event=12345` to have zm-aidect analyze the given event as-if it were watching live, using the current settings
+Run `zm-aidect event [--monitor=ID] <EVENT-ID>` to have zm-aidect analyze the given event as-if it were watching live, using the current settings
 of the monitor the event belongs to. Detections will be printed,  no triggering takes place.
 This can be used to verify that aidect does (not) detect something you (don't) want to detect without getting up.
+If you let zm-aidect analyze one monitor and trigger another, then you can use the `--monitor` option here
+to have zm-aidect use the correct monitor for reading the zone configuration.
 
 ## Performance
 

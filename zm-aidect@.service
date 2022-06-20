@@ -1,6 +1,6 @@
 [Service]
 Type=simple
-ExecStart=/zm-aidect/zm-aidect %i
+ExecStart=/zm-aidect/zm-aidect run %i
 WorkingDirectory=/zm-aidect
 Restart=always
 RestartSec=1
