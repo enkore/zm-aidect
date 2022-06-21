@@ -1,12 +1,11 @@
 use std::collections::HashMap;
-use std::error::Error;
 use std::fs::{File, OpenOptions};
-use std::io::ErrorKind;
 use std::mem::size_of;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::time::Duration;
-use std::{fs, io, slice};
+use std::{fs, slice};
 
+use anyhow::{anyhow, Context, Result};
 use libc::timeval;
 use log::error;
 use opencv::core::{Mat, MatTrait, MatTraitConst};
@@ -18,13 +17,13 @@ mod shm;
 
 pub trait MonitorTrait<'this> {
     // for lack of a better term
-    type ImageIterator: Iterator<Item = Result<Image, Box<dyn Error>>>;
+    type ImageIterator: Iterator<Item = Result<Image>>;
 
-    fn stream_images(&'this self) -> Result<Self::ImageIterator, Box<dyn Error>>;
+    fn stream_images(&'this self) -> Result<Self::ImageIterator>;
 
-    fn is_idle(&self) -> io::Result<bool>; // inconsistent error returns
+    fn is_idle(&self) -> Result<bool>;
 
-    fn trigger(&self, cause: &str, description: &str, score: u32) -> io::Result<u64>;
+    fn trigger(&self, cause: &str, description: &str, score: u32) -> Result<u64>;
 }
 
 pub struct Monitor<'zmconf> {
@@ -42,7 +41,7 @@ pub struct Monitor<'zmconf> {
 impl<'this> MonitorTrait<'this> for Monitor<'this> {
     type ImageIterator = ImageStream<'this>;
 
-    fn stream_images(&'this self) -> Result<Self::ImageIterator, Box<dyn Error>> {
+    fn stream_images(&'this self) -> Result<Self::ImageIterator> {
         let state = self.read()?;
         let settings = MonitorSettings::query(self.zm_conf, self.monitor_id)?;
         let image_buffer_count = settings.image_buffer_count;
@@ -66,13 +65,13 @@ impl<'this> MonitorTrait<'this> for Monitor<'this> {
         })
     }
 
-    fn is_idle(&self) -> io::Result<bool> {
+    fn is_idle(&self) -> Result<bool> {
         Ok(self.read()?.shared_data.state == shm::MonitorState::Idle)
     }
 
     /// Mark at least one frame as an alarm frame with the given score. Wait for event to be created,
     /// then return event ID. Does not necessarily cause creation of a new event.
-    fn trigger(&self, cause: &str, description: &str, score: u32) -> io::Result<u64> {
+    fn trigger(&self, cause: &str, description: &str, score: u32) -> Result<u64> {
         let poll_interval = 10;
         self.set_trigger(cause, description, score)?;
         for n in 0.. {
@@ -94,9 +93,9 @@ impl<'this> MonitorTrait<'this> for Monitor<'this> {
 }
 
 impl Monitor<'_> {
-    pub fn connect(zm_conf: &ZoneMinderConf, monitor_id: u32) -> Result<Monitor, Box<dyn Error>> {
+    pub fn connect(zm_conf: &ZoneMinderConf, monitor_id: u32) -> Result<Monitor> {
         let mmap_path = format!("{}/zm.mmap.{}", zm_conf.mmap_path, monitor_id);
-        let file = OpenOptions::new().read(true).write(true).open(&mmap_path)?;
+        let file = OpenOptions::new().read(true).write(true).open(&mmap_path).with_context(|| format!("Failed to open mmap file {} for monitor {}", mmap_path, monitor_id))?;
 
         let trigger_data_offset = size_of::<shm::MonitorSharedData>();
         let videostore_data_offset = trigger_data_offset + size_of::<shm::MonitorTriggerData>();
@@ -113,7 +112,7 @@ impl Monitor<'_> {
         })
     }
 
-    fn set_trigger(&self, cause: &str, description: &str, score: u32) -> io::Result<()> {
+    fn set_trigger(&self, cause: &str, description: &str, score: u32) -> Result<()> {
         let cause = cause.as_bytes();
         let description = description.as_bytes();
 
@@ -128,7 +127,7 @@ impl Monitor<'_> {
         self.pwrite(self.trigger_data_offset, &trigger_data)
     }
 
-    fn reset_trigger(&self) -> io::Result<()> {
+    fn reset_trigger(&self) -> Result<()> {
         let mut trigger_data = self.read()?.trigger_data;
         trigger_data.trigger_cause.fill(0);
         trigger_data.trigger_text.fill(0);
@@ -139,11 +138,11 @@ impl Monitor<'_> {
         self.pwrite(self.trigger_data_offset, &trigger_data)
     }
 
-    fn read(&self) -> io::Result<MonitorState> {
-        let shared_data: shm::MonitorSharedData = self.pread(0)?;
-        let trigger_data: shm::MonitorTriggerData = self.pread(self.trigger_data_offset)?;
+    fn read(&self) -> Result<MonitorState> {
+        let shared_data: shm::MonitorSharedData = self.pread(0).with_context(|| format!("Failed to read shared data"))?;
+        let trigger_data: shm::MonitorTriggerData = self.pread(self.trigger_data_offset).with_context(|| format!("Failed to read trigger data"))?;
         if shared_data.valid == 0 {
-            return Err(io::Error::new(ErrorKind::Other, "Monitor shm is not valid"));
+            return Err(anyhow!("Monitor shm is not valid"));
         }
         self.check_file_stale()?;
         assert_eq!(
@@ -162,26 +161,24 @@ impl Monitor<'_> {
         })
     }
 
-    fn pread<T>(&self, offset: usize) -> io::Result<T> {
+    fn pread<T>(&self, offset: usize) -> Result<T> {
         let mut buf = Vec::new();
         buf.resize(size_of::<T>(), 0);
         self.file.read_exact_at(&mut buf, offset as u64)?;
         unsafe { Ok(std::ptr::read(buf.as_ptr() as *const _)) }
     }
 
-    fn pwrite<T>(&self, offset: usize, data: &T) -> io::Result<()> {
+    fn pwrite<T>(&self, offset: usize, data: &T) -> Result<()> {
         let data = unsafe { slice::from_raw_parts(data as *const T as *const u8, size_of::<T>()) };
-        self.file.write_all_at(data, offset as u64)
+        self.file.write_all_at(data, offset as u64)?;
+        Ok(())
     }
 
-    fn check_file_stale(&self) -> io::Result<()> {
+    fn check_file_stale(&self) -> Result<()> {
         // Additional sanity check, if the file-on-tmpfs is now a different file, we're definitely listening to a stranger.
         // ZM seems to be quite good about ensuring shared_data.valid gets flipped to 0 even when zmc crashes though.
-        if fs::metadata(&self.mmap_path)?.ino() != self.ino {
-            return Err(io::Error::new(
-                ErrorKind::Other,
-                "Monitor shm fd is stale, must reconnect",
-            ));
+        if fs::metadata(&self.mmap_path).with_context(|| format!("Monitor mmap file {} does not exist", self.mmap_path))?.ino() != self.ino {
+            return Err(anyhow!("Monitor shm fd is stale, must reconnect"));
         }
         Ok(())
     }
@@ -205,7 +202,7 @@ pub struct Image {
 }
 
 impl Image {
-    pub fn convert_to_rgb24(self) -> opencv::Result<Mat> {
+    pub fn convert_to_rgb24(self) -> Result<Mat> {
         let conversion = match self.format {
             shm::SubpixelOrder::NONE => Some(opencv::imgproc::COLOR_GRAY2RGB),
             shm::SubpixelOrder::RGB => None,
@@ -218,7 +215,7 @@ impl Image {
     }
 
     #[allow(dead_code)]
-    pub fn convert_to_rgb32(self) -> opencv::Result<Mat> {
+    pub fn convert_to_rgb32(self) -> Result<Mat> {
         let conversion = match self.format {
             shm::SubpixelOrder::NONE => Some(opencv::imgproc::COLOR_GRAY2RGBA),
             shm::SubpixelOrder::RGB => Some(opencv::imgproc::COLOR_RGB2RGBA),
@@ -231,7 +228,7 @@ impl Image {
     }
 
     #[allow(dead_code)]
-    pub fn convert_to_gray(self) -> opencv::Result<Mat> {
+    pub fn convert_to_gray(self) -> Result<Mat> {
         let conversion = match self.format {
             shm::SubpixelOrder::NONE => None,
             shm::SubpixelOrder::RGB => Some(opencv::imgproc::COLOR_RGB2GRAY),
@@ -243,7 +240,7 @@ impl Image {
         self.convert(conversion)
     }
 
-    fn convert(self, conversion: Option<i32>) -> opencv::Result<Mat> {
+    fn convert(self, conversion: Option<i32>) -> Result<Mat> {
         if let Some(conversion) = conversion {
             let mut rgb_image = Mat::default();
             // You could do this in-place as well, though it's probably not worth it
@@ -266,7 +263,7 @@ pub struct ImageStream<'mon> {
 }
 
 impl ImageStream<'_> {
-    fn wait_for_image(&mut self) -> Result<Image, Box<dyn Error>> {
+    fn wait_for_image(&mut self) -> Result<Image> {
         loop {
             let state = self.monitor.read()?;
             let last_write_index = state.shared_data.last_write_index as u32;
@@ -281,7 +278,7 @@ impl ImageStream<'_> {
         }
     }
 
-    fn read_image(&self, index: u32) -> Result<Mat, Box<dyn Error>> {
+    fn read_image(&self, index: u32) -> Result<Mat> {
         assert_eq!(self.width * self.height * 4, self.image_size);
         let mut mat = Mat::new_size_with_default(
             (self.width as i32, self.height as i32).into(),
@@ -292,20 +289,20 @@ impl ImageStream<'_> {
         Ok(mat)
     }
 
-    fn read_image_into(&self, index: u32, mat: &mut Mat) -> Result<(), Box<dyn Error>> {
+    fn read_image_into(&self, index: u32, mat: &mut Mat) -> Result<()> {
         assert_eq!(self.width * self.height, mat.total() as u32);
         assert_eq!(mat.typ(), zm_format_to_cv_format(self.format));
         self.monitor.check_file_stale()?;
         let mut slice =
             unsafe { slice::from_raw_parts_mut(mat.ptr_mut(0)?, self.image_size as usize) };
         let image_offset = self.shared_images_offset as u64 + self.image_size as u64 * index as u64;
-        self.monitor.file.read_exact_at(&mut slice, image_offset)?;
+        self.monitor.file.read_exact_at(&mut slice, image_offset).with_context(|| "Failed to read image")?;
         Ok(())
     }
 }
 
 impl Iterator for ImageStream<'_> {
-    type Item = Result<Image, Box<dyn Error>>;
+    type Item = Result<Image>;
 
     fn next(&mut self) -> Option<Self::Item> {
         Some(self.wait_for_image())
@@ -344,12 +341,13 @@ impl ZoneMinderConf {
         }
     }
 
-    pub fn parse_default() -> io::Result<ZoneMinderConf> {
-        let path = "/etc/zm/zm.conf";
-        let contents = fs::read_to_string(path)?;
+    pub fn parse_default() -> Result<ZoneMinderConf> {
+        let zm_conf = "/etc/zm/zm.conf";
+        let zm_conf_d = "/etc/zm/conf.d";
+        let contents = fs::read_to_string(zm_conf).with_context(|| format!("Failed to parse Zoneminder configuration file {}", zm_conf))?;
         let contents = contents
             + "\n"
-            + &fs::read_dir("/etc/zm/conf.d")?
+            + &fs::read_dir(zm_conf_d).with_context(|| format!("Failed to read Zoneminder overrides from {}", zm_conf_d))?
                 .filter_map(Result::ok)
                 .map(|entry| fs::read_to_string(entry.path()))
                 .filter_map(Result::ok)

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
-use std::error::Error;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use log::{debug, error, info, warn};
 use opencv::core::{Mat, Rect};
@@ -62,7 +62,7 @@ enum Mode {
     },
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<()> {
     /*
     // run on raw image
     let mut image_data = fs::read("imago_with_human.rgba")?;
@@ -154,7 +154,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn run(monitor_id: u32) -> Result<(), Box<dyn Error>> {
+fn run(monitor_id: u32) -> Result<()> {
     let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
     let monitor = zoneminder::Monitor::connect(&zm_conf, monitor_id)?;
     let zone_config = zoneminder::db::ZoneConfig::get_zone_config(&zm_conf, monitor_id)?;
@@ -241,9 +241,9 @@ fn run(monitor_id: u32) -> Result<(), Box<dyn Error>> {
 
             let event_id = if trigger_id != monitor_id {
                 let trigger_monitor = zoneminder::Monitor::connect(&zm_conf, trigger_id)?;
-                trigger_monitor.trigger("aidect", &description, score)?
+                trigger_monitor.trigger("aidect", &description, score).with_context(|| format!("Failed to trigger monitor ID {}", trigger_id))?
             } else {
-                monitor.trigger("aidect", &description, score)?
+                monitor.trigger("aidect", &description, score).with_context(|| "Failed to trigger event")?
             };
             let update = event_tracker.push_detection(d.clone(), event_id);
             process_update_event(update);
@@ -333,10 +333,7 @@ mod coalescing {
         }
 
         pub fn clear(&mut self) -> Option<UpdateEvent> {
-            if self.current_event.is_none() {
-                return None;
-            }
-            let current_event = self.current_event.take().unwrap();
+            let current_event = self.current_event.take()?;
             let detection = current_event
                 .detections
                 .iter()

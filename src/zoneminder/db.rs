@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::error::Error;
 
+use anyhow::{anyhow, Result};
 use mysql::params;
 use mysql::prelude::Queryable;
 use opencv::core::Rect;
@@ -26,15 +26,15 @@ pub fn update_event_notes(
     zm_conf: &ZoneMinderConf,
     event_id: u64,
     notes: &str,
-) -> mysql::Result<()> {
+) -> Result<()> {
     let mut db = zm_conf.connect_db()?;
-    db.exec_drop(
+    Ok(db.exec_drop(
         "UPDATE Events SET Notes = :notes WHERE Id = :id",
         params! {
             "id" => event_id,
             "notes" => notes,
         },
-    )
+    )?)
 }
 
 #[derive(Debug)]
@@ -53,7 +53,7 @@ impl MonitorSettings {
     pub fn query(
         zm_conf: &ZoneMinderConf,
         monitor_id: u32,
-    ) -> Result<MonitorSettings, Box<dyn Error>> {
+    ) -> Result<MonitorSettings> {
         let mut db = zm_conf.connect_db()?;
         Ok(db.exec_map("SELECT Name, StorageId, Enabled, Width, Height, Colours, ImageBufferCount, AnalysisFPSLimit FROM Monitors WHERE Id = :id",
                        params! { "id" => monitor_id },
@@ -111,13 +111,13 @@ impl ZoneConfig {
     pub fn get_zone_config(
         zm_conf: &ZoneMinderConf,
         monitor_id: u32,
-    ) -> Result<ZoneConfig, Box<dyn Error>> {
+    ) -> Result<ZoneConfig> {
         let mut db = zm_conf.connect_db()?;
         let dbzone = db.exec_first(
             "SELECT Name, Type, Coords FROM Zones WHERE MonitorId = :id AND Name LIKE \"aidect%\"",
             params! { "id" => monitor_id },
         )?;
-        let dbzone: mysql::Row = dbzone.unwrap();
+        let dbzone: mysql::Row = dbzone.ok_or(anyhow!("No aidect zone found for monitor {}", monitor_id))?;
 
         Ok(ZoneConfig::parse(
             &dbzone.get::<String, &str>("Name").unwrap(),
