@@ -38,28 +38,27 @@ pub fn update_event_notes(
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
-pub struct MonitorDatabaseConfig {
+pub struct MonitorSettings {
     pub name: String,
-    storage_id: u32,
-    enabled: bool,
+    pub storage_id: u32,
+    pub enabled: bool,
     pub width: u32,
     pub height: u32,
-    colours: u32,
+    pub colours: u32,
     pub image_buffer_count: u32,
     pub analysis_fps_limit: f32,
 }
 
-impl MonitorDatabaseConfig {
+impl MonitorSettings {
     pub fn query(
         zm_conf: &ZoneMinderConf,
         monitor_id: u32,
-    ) -> Result<MonitorDatabaseConfig, Box<dyn Error>> {
+    ) -> Result<MonitorSettings, Box<dyn Error>> {
         let mut db = zm_conf.connect_db()?;
         Ok(db.exec_map("SELECT Name, StorageId, Enabled, Width, Height, Colours, ImageBufferCount, AnalysisFPSLimit FROM Monitors WHERE Id = :id",
                        params! { "id" => monitor_id },
                        |(name, storage_id, enabled, width, height, colours, image_buffer_count, analysis_fps_limit)| {
-                           MonitorDatabaseConfig {
+                           MonitorSettings {
                                name,
                                storage_id,
                                enabled,
@@ -127,9 +126,10 @@ impl ZoneConfig {
     }
 
     fn parse(name: &str, coords: &str) -> ZoneConfig {
-        let mut config = Self::parse_zone_name(name);
-        config.shape = Self::parse_zone_coords(coords);
-        config
+        ZoneConfig {
+            shape: Self::parse_zone_coords(coords),
+            ..Self::parse_zone_name(name)
+        }
     }
 
     fn parse_zone_name(zone_name: &str) -> ZoneConfig {

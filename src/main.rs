@@ -158,7 +158,7 @@ fn run(monitor_id: u32) -> Result<(), Box<dyn Error>> {
     let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
     let monitor = zoneminder::Monitor::connect(&zm_conf, monitor_id)?;
     let zone_config = zoneminder::db::ZoneConfig::get_zone_config(&zm_conf, monitor_id)?;
-    let monitor_config = zoneminder::db::MonitorDatabaseConfig::query(&zm_conf, monitor_id)?;
+    let monitor_settings = zoneminder::db::MonitorSettings::query(&zm_conf, monitor_id)?;
 
     instrumentation::spawn_prometheus_client(9000 + monitor_id as u16);
 
@@ -176,7 +176,7 @@ fn run(monitor_id: u32) -> Result<(), Box<dyn Error>> {
         false,
     )?;
 
-    let max_fps = monitor_config.analysis_fps_limit;
+    let max_fps = monitor_settings.analysis_fps_limit;
     let max_fps = zone_config.fps.map(|v| v as f32).unwrap_or(max_fps);
     let mut pacemaker = RealtimePacemaker::new(max_fps);
     let trigger_id = zone_config.trigger.unwrap_or(monitor_id);

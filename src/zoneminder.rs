@@ -11,7 +11,7 @@ use libc::timeval;
 use log::error;
 use opencv::core::{Mat, MatTrait, MatTraitConst};
 
-use crate::zoneminder::db::MonitorDatabaseConfig;
+use crate::zoneminder::db::MonitorSettings;
 
 pub mod db;
 mod shm;
@@ -44,8 +44,8 @@ impl<'this> MonitorTrait<'this> for Monitor<'this> {
 
     fn stream_images(&'this self) -> Result<Self::ImageIterator, Box<dyn Error>> {
         let state = self.read()?;
-        let config = MonitorDatabaseConfig::query(self.zm_conf, self.monitor_id)?;
-        let image_buffer_count = config.image_buffer_count;
+        let settings = MonitorSettings::query(self.zm_conf, self.monitor_id)?;
+        let image_buffer_count = settings.image_buffer_count;
 
         // now that we have the image buffer size we can figure the dynamic offsets out
         let shared_timestamps_offset =
@@ -55,8 +55,8 @@ impl<'this> MonitorTrait<'this> for Monitor<'this> {
         let shared_images_offset = shared_images_offset + 64 - (shared_images_offset % 64);
 
         Ok(ImageStream {
-            width: config.width,
-            height: config.height,
+            width: settings.width,
+            height: settings.height,
             image_buffer_count,
             monitor: self,
             last_read_index: image_buffer_count,
