@@ -1,10 +1,9 @@
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::slice;
 
 use anyhow::{anyhow, Result};
-use opencv::core::{Mat, MatTrait};
+use opencv::core::{Mat, MatTraitManual};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -80,9 +79,7 @@ impl Iterator for ImageStream {
             0.into(),
         )
         .ok()?;
-        let image_size = self.width * self.height * 3;
-        let mut slice =
-            unsafe { slice::from_raw_parts_mut(mat.ptr_mut(0).ok()?, image_size as usize) };
+        let mut slice = mat.data_bytes_mut().expect("Got an non-continuous Mat for some reason?");
         let stdout = self.ffmpeg.stdout.as_mut()?;
         stdout.read_exact(&mut slice).ok()?;
         return Some(mat);

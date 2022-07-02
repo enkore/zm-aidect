@@ -8,7 +8,7 @@ use std::{fs, slice};
 use anyhow::{anyhow, Context, Result};
 use libc::timeval;
 use log::error;
-use opencv::core::{Mat, MatTrait, MatTraitConst};
+use opencv::core::{Mat, MatTraitConst, MatTraitManual};
 
 use crate::zoneminder::db::MonitorSettings;
 
@@ -313,8 +313,7 @@ impl ImageStream<'_> {
         assert_eq!(self.width * self.height, mat.total() as u32);
         assert_eq!(mat.typ(), zm_format_to_cv_format(self.format));
         self.monitor.check_file_stale()?;
-        let mut slice =
-            unsafe { slice::from_raw_parts_mut(mat.ptr_mut(0)?, self.image_size as usize) };
+        let mut slice = mat.data_bytes_mut()?;
         let image_offset = self.shared_images_offset as u64 + self.image_size as u64 * index as u64;
         self.monitor
             .file
