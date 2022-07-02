@@ -46,7 +46,7 @@ pub struct MonitorSettings {
     pub height: u32,
     pub colours: u32,
     pub image_buffer_count: u32,
-    pub analysis_fps_limit: f32,
+    pub analysis_fps_limit: Option<f32>,
 }
 
 impl MonitorSettings {

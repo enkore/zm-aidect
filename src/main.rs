@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::env;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use lazy_static::lazy_static;
 use log::{debug, error, info, warn};
@@ -66,6 +67,7 @@ enum Mode {
 }
 
 fn main() -> Result<()> {
+    env::set_current_dir(env::current_exe()?.parent().unwrap())?;
     /*
     // run on raw image
     let mut image_data = fs::read("imago_with_human.rgba")?;
@@ -184,7 +186,8 @@ fn connect_zm(monitor_id: u32, zm_conf: &zoneminder::ZoneMinderConf) -> Result<M
     info!("{}: Picked up zone bounds {:?}", monitor_id, bounding_box);
 
     let max_fps = monitor_settings.analysis_fps_limit;
-    let max_fps = zone_config.fps.map(|v| v as f32).unwrap_or(max_fps);
+    let max_fps = zone_config.fps.map(|v| v as f32).or(max_fps);
+    let max_fps = max_fps.ok_or(anyhow!("No analysis FPS limit set - set either \"Analysis FPS\" in the Zoneminder web console, or set the FPS key in the aidect zone."))?;
 
     let trigger_id = zone_config.trigger.unwrap_or(monitor_id);
 
@@ -270,7 +273,6 @@ fn run(monitor_id: u32) -> Result<()> {
     let mut ctx = connect_zm(monitor_id, &zm_conf)?;
 
     instrumentation::spawn_prometheus_client(9000 + monitor_id as u16);
-
 
     let mut pacemaker = RealtimePacemaker::new(ctx.max_fps);
     let mut event_tracker = coalescing::EventTracker::new();
