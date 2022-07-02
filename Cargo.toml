@@ -12,7 +12,6 @@ path = "src/main.rs"
 [dependencies]
 libc = "0.2.126"
 simple_moving_average = "0.1.2"
-opencv = { version = "0.64.0", features = ["clang-runtime"] }
 mysql = { version = "22.1.0", default-features = false }
 flate2 = { version = "*", default-features = false, features = ["zlib"] }
 tiny_http = "0.11.0"
@@ -22,6 +21,17 @@ log = "0.4.17"
 stderrlog = "0.5.1"
 clap = { version = "3.2.5", features = ["derive"] }
 anyhow = "1.0.57"
+
+[dependencies.opencv]
+version = "0.65.0"
+default-features = false
+features = [
+    "clang-runtime",  # required due to mysql-common using it
+    "dnn",
+    "imgcodecs",
+    "imgproc",
+    "features2d",  # required for some reason I don't understand
+]
 
 [profile.tagged]
 inherits = "release"

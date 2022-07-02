@@ -2,9 +2,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use opencv::core::{Mat, MatTraitConst, MatTraitConstManual, Rect, Vector, CV_8U};
-use opencv::dnn::{
-    blob_from_image, nms_boxes, read_net, LayerTraitConst, Net, NetTrait, NetTraitConst,
-};
+use opencv::dnn::{blob_from_image, nms_boxes, read_net, LayerTraitConst, Net, NetTrait, NetTraitConst, DictValue};
 use opencv::types::{VectorOfMat, VectorOfRect};
 
 #[derive(Clone, Debug)]
@@ -63,7 +61,7 @@ impl YoloV4Tiny {
 
         let out_names = net.get_unconnected_out_layers_names()?;
         let out_layers = net.get_unconnected_out_layers()?;
-        let out_layer_type = net.get_layer(out_layers.get(0).unwrap()).unwrap().typ();
+        let out_layer_type = net.get_layer(DictValue::from_i32(out_layers.get(0).unwrap())?).unwrap().typ();
         assert_eq!(out_layer_type, "Region");
 
         Ok(YoloV4Tiny {
