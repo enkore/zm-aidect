@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use lazy_static::lazy_static;
 use log::{debug, error, info, warn};
 use opencv::core::{Mat, Rect};
 use simple_moving_average::SMA;
@@ -16,6 +17,8 @@ use crate::zoneminder::MonitorTrait;
 mod instrumentation;
 mod ml;
 mod zoneminder;
+
+// TODO: Heed analysis images setting in ZM and generate those from within zm-aidect (sparsely, only for frames actually analyzed, not sure if the DB schema allows for that)
 
 #[derive(Parser, Debug)]
 #[clap(disable_help_subcommand = true)]
@@ -150,17 +153,27 @@ fn main() -> Result<()> {
 
     match args.mode {
         Mode::Run { monitor_id } => run(monitor_id),
+        Mode::Test { monitor_id } => test(monitor_id),
         _ => panic!("Not implemented"),
     }
 }
 
-fn run(monitor_id: u32) -> Result<()> {
-    let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
-    let monitor = zoneminder::Monitor::connect(&zm_conf, monitor_id)?;
-    let zone_config = zoneminder::db::ZoneConfig::get_zone_config(&zm_conf, monitor_id)?;
-    let monitor_settings = zoneminder::db::MonitorSettings::query(&zm_conf, monitor_id)?;
+struct MonitorContext<'zm_conf> {
+    zm_conf: &'zm_conf zoneminder::ZoneMinderConf,
+    monitor: zoneminder::Monitor<'zm_conf>,
+    zone_config: zoneminder::db::ZoneConfig,
+    monitor_settings: zoneminder::db::MonitorSettings,
+    bounding_box: Rect,
+    yolo: ml::YoloV4Tiny,
+    max_fps: f32,
+    monitor_id: u32,
+    trigger_id: u32,
+}
 
-    instrumentation::spawn_prometheus_client(9000 + monitor_id as u16);
+fn connect_zm(monitor_id: u32, zm_conf: &zoneminder::ZoneMinderConf) -> Result<MonitorContext> {
+    let monitor = zoneminder::Monitor::connect(zm_conf, monitor_id)?;
+    let zone_config = zoneminder::db::ZoneConfig::get_zone_config(zm_conf, monitor_id)?;
+    let monitor_settings = zoneminder::db::MonitorSettings::query(zm_conf, monitor_id)?;
 
     info!(
         "{}: Picked up zone configuration: {:?}",
@@ -170,61 +183,117 @@ fn run(monitor_id: u32) -> Result<()> {
     let bounding_box = zone_config.shape.bounding_box();
     info!("{}: Picked up zone bounds {:?}", monitor_id, bounding_box);
 
-    let mut yolo = ml::YoloV4Tiny::new(
+    let max_fps = monitor_settings.analysis_fps_limit;
+    let max_fps = zone_config.fps.map(|v| v as f32).unwrap_or(max_fps);
+
+    let trigger_id = zone_config.trigger.unwrap_or(monitor_id);
+
+    let yolo = ml::YoloV4Tiny::new(
         zone_config.threshold.unwrap_or(0.5),
         zone_config.size.unwrap_or(256),
         false,
     )?;
 
-    let max_fps = monitor_settings.analysis_fps_limit;
-    let max_fps = zone_config.fps.map(|v| v as f32).unwrap_or(max_fps);
-    let mut pacemaker = RealtimePacemaker::new(max_fps);
-    let trigger_id = zone_config.trigger.unwrap_or(monitor_id);
+    Ok(MonitorContext {
+        zm_conf, monitor, zone_config, monitor_settings, bounding_box, yolo, max_fps, monitor_id, trigger_id
+    })
+}
+
+struct Inferred {
+    duration: Duration,
+    detections: Vec<Detection>,
+}
+
+fn infer(image: zoneminder::Image, bounding_box: Rect, zone_config: &zoneminder::db::ZoneConfig, yolo: &mut ml::YoloV4Tiny) -> Result<Inferred> {
+    let image = image.convert_to_rgb24()?;
+    // TODO: blank remaining area outside zone polygon
+    let image = Mat::roi(&image, bounding_box)?;
+
+    let start = Instant::now();
+    let detections = yolo.infer(&image)?;
+    let duration = start.elapsed();
+
+    let detections: Vec<Detection> = detections
+        .iter()
+        .filter(|d| CLASSES.contains_key(&d.class_id))
+        .filter(|d| {
+            (d.bounding_box.width * d.bounding_box.height) as u32
+                > zone_config.min_area.unwrap_or(0)
+        })
+        .cloned()
+        .collect();
+
+    Ok(Inferred { duration, detections })
+}
+
+fn trigger(ctx: &MonitorContext, description: &str, score: u32) -> Result<u64> {
+    Ok(if ctx.trigger_id != ctx.monitor_id {
+        let trigger_monitor = zoneminder::Monitor::connect(&ctx.zm_conf, ctx.trigger_id)?;
+        trigger_monitor.trigger("aidect", description, score).with_context(|| format!("Failed to trigger monitor ID {}", ctx.trigger_id))?
+    } else {
+        ctx.monitor.trigger("aidect", description, score).with_context(|| "Failed to trigger event")?
+    })
+}
+
+fn test(monitor_id: u32) -> Result<()> {
+    let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
+    let mut ctx = connect_zm(monitor_id, &zm_conf)?;
+
+    println!("Connected to monitor ID {}: {}", monitor_id, ctx.monitor_settings.name);
+
+    let num_images = 3;
+    println!("Grabbing {} images and running detection", num_images);
+    for image in ctx.monitor.stream_images()?.take(num_images) {
+        let result = infer(image?, ctx.bounding_box, &ctx.zone_config, &mut ctx.yolo)?;
+        println!("Inference took {:?}, detections: {:#?}", result.duration, result.detections);
+    }
+
+    println!("Triggering an event on monitor {}", ctx.trigger_id);
+    let event_id = trigger(&ctx, "zm-aidect test", 1)?;
+    println!("Success, event ID is {}", event_id);
+
+    Ok(())
+}
+
+lazy_static! {
+    static ref CLASSES: HashMap<i32, &'static str> = [  // TODO this should be loaded at runtime from the model definition
+        (1, "Human"),
+        (3, "Car"),
+        (15, "Bird"),
+        (16, "Cat"),
+        (17, "Dog"),
+    ].into();
+}
+
+fn run(monitor_id: u32) -> Result<()> {
+    let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
+    let mut ctx = connect_zm(monitor_id, &zm_conf)?;
+
+    instrumentation::spawn_prometheus_client(9000 + monitor_id as u16);
+
+
+    let mut pacemaker = RealtimePacemaker::new(ctx.max_fps);
     let mut event_tracker = coalescing::EventTracker::new();
 
     // watchdog is set to 20x max_fps frame interval
-    let watchdog = ThreadedWatchdog::new(Duration::from_secs_f32(20.0 / max_fps));
-
-    let classes: HashMap<i32, &str> = [
-        (1, "Human"), // person
-        (3, "Car"),   // car
-        (15, "Bird"), // bird
-        (16, "Cat"),  // cat
-        (17, "Dog"),  // dog
-    ]
-    .into();
+    let watchdog = ThreadedWatchdog::new(Duration::from_secs_f32(20.0 / ctx.max_fps));
 
     let process_update_event = |update: Option<coalescing::UpdateEvent>| {
         if let Some(update) = update {
-            let description = describe(&classes, &bounding_box, &update.detection);
+            let description = describe(&CLASSES, &ctx.bounding_box, &update.detection);
             if let Err(e) =
-                zoneminder::db::update_event_notes(&zm_conf, update.event_id, &description)
+                zoneminder::db::update_event_notes(&ctx.zm_conf, update.event_id, &description)
             {
                 error!(
                     "{}: Failed to update event {} notes: {}",
-                    trigger_id, update.event_id, e
+                    ctx.trigger_id, update.event_id, e
                 );
             }
         }
     };
 
-    for image in monitor.stream_images()? {
-        let image = image?.convert_to_rgb24()?;
-        // TODO: blank remaining area outside zone polygon
-        let image = Mat::roi(&image, bounding_box)?;
-
-        let inference_start = Instant::now();
-        let detections = yolo.infer(&image)?;
-        let inference_duration = inference_start.elapsed();
-
-        let detections: Vec<&Detection> = detections
-            .iter()
-            .filter(|d| classes.contains_key(&d.class_id))
-            .filter(|d| {
-                (d.bounding_box.width * d.bounding_box.height) as u32
-                    > zone_config.min_area.unwrap_or(0)
-            })
-            .collect();
+    for image in ctx.monitor.stream_images()? {
+        let Inferred { duration: inference_duration, detections } = infer(image?, ctx.bounding_box, &ctx.zone_config, &mut ctx.yolo)?;
 
         if detections.len() > 0 {
             debug!(
@@ -232,24 +301,19 @@ fn run(monitor_id: u32) -> Result<()> {
                 monitor_id, inference_duration, detections
             );
 
-            let &d = detections
+            let d = detections
                 .iter()
                 .max_by_key(|d| (d.confidence * 1000.0) as u32)
                 .unwrap(); // generally there will only be one anyway
             let score = (d.confidence * 100.0) as u32;
-            let description = describe(&classes, &bounding_box, &d);
+            let description = describe(&CLASSES, &ctx.bounding_box, &d);
 
-            let event_id = if trigger_id != monitor_id {
-                let trigger_monitor = zoneminder::Monitor::connect(&zm_conf, trigger_id)?;
-                trigger_monitor.trigger("aidect", &description, score).with_context(|| format!("Failed to trigger monitor ID {}", trigger_id))?
-            } else {
-                monitor.trigger("aidect", &description, score).with_context(|| "Failed to trigger event")?
-            };
+            let event_id = trigger(&ctx, &description, score)?;
             let update = event_tracker.push_detection(d.clone(), event_id);
             process_update_event(update);
         }
 
-        if monitor.is_idle()? {
+        if ctx.monitor.is_idle()? {
             // Not recording any more, flush current event description if any
             let update = event_tracker.clear();
             if update.is_some() {
