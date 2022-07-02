@@ -43,7 +43,10 @@ enum Mode {
         /// Zoneminder monitor ID
         #[clap(value_parser)]
         monitor_id: u32,
-        // TODO: instrumentation listen address, base port, some way to disable it (=> no default?)
+        #[clap(long)]
+        instrumentation_address: Option<String>,
+        #[clap(long, default_value_t = 9000)]
+        instrumentation_port: u16,
     },
     Test {
         /// Zoneminder monitor ID
@@ -73,7 +76,7 @@ fn main() -> Result<()> {
         .unwrap();
 
     match args.mode {
-        Mode::Run { monitor_id } => run(monitor_id),
+        Mode::Run { monitor_id, instrumentation_address, instrumentation_port } => run(monitor_id, instrumentation_address, instrumentation_port),
         Mode::Test { monitor_id } => test(monitor_id),
         Mode::Event {
             event_id,
@@ -297,11 +300,13 @@ lazy_static! {
     ].into();
 }
 
-fn run(monitor_id: u32) -> Result<()> {
+fn run(monitor_id: u32, instrumentation_address: Option<String>, instrumentation_port: u16) -> Result<()> {
     let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
     let mut ctx = connect_zm(monitor_id, &zm_conf)?;
 
-    instrumentation::spawn_prometheus_client(9000 + monitor_id as u16);
+    if let Some(address) = instrumentation_address {
+        instrumentation::spawn_prometheus_client(address, instrumentation_port + monitor_id as u16);
+    }
 
     let mut pacemaker = RealtimePacemaker::new(ctx.max_fps);
     let mut event_tracker = coalescing::EventTracker::new();

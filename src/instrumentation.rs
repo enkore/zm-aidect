@@ -19,9 +19,9 @@ fn collect() -> String {
     String::from_utf8(buffer.clone()).unwrap()
 }
 
-pub fn spawn_prometheus_client(port: u16) {
+pub fn spawn_prometheus_client(address: String, port: u16) {
     std::thread::spawn(move || {
-        let server = tiny_http::Server::http(("0.0.0.0", port)).unwrap();
+        let server = tiny_http::Server::http((address, port)).unwrap();
         for request in server.incoming_requests() {
             let response = tiny_http::Response::from_string(collect());
             let _ = request.respond(response);
