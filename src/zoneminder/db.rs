@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 use mysql::params;
@@ -71,6 +72,116 @@ impl MonitorSettings {
                        }
         )?.remove(0))
     }
+}
+
+#[derive(Debug)]
+pub struct Event {
+    pub id: u64,
+    pub monitor_id: u32,
+    pub name: String,
+    pub max_score: u32,
+    pub avg_score: u32,
+    pub total_score: u32,
+    default_video: String,
+    start_datetime: String,  // local time, 2022-01-27 18:45:59
+
+    storage: Storage,
+}
+
+impl Event {
+    pub fn query(
+        zm_conf: &ZoneMinderConf,
+        event_id: u64,
+    ) -> Result<Event> {
+        let mut db = zm_conf.connect_db()?;
+
+        let storage_id = db.exec_first("SELECT StorageId FROM Events WHERE Id = :id", params!{ "id" => event_id })?;
+        let storage = get_storage_by_id(&mut db, storage_id.unwrap())?;
+
+        // the "date time" handling here is janky af but sufficient for what's needed (only used to derive the file name)
+        Ok(db.exec_map("SELECT Name, MonitorId, MaxScore, AvgScore, TotScore, DefaultVideo, CAST(StartDateTime AS CHAR) FROM Events WHERE Id = :id",
+                       params! { "id" => event_id },
+                       |(name, monitor_id, max_score, avg_score, total_score, default_video, start_datetime)| {
+                           Event {
+                               id: event_id,
+                               name,
+                               monitor_id,
+                               max_score,
+                               avg_score,
+                               total_score,
+                               default_video,
+                               start_datetime,
+                               storage: storage.clone(),
+                           }
+                       }
+        )?.remove(0))
+    }
+
+    pub fn video_path(&self) -> Result<PathBuf> {
+        if self.storage.storage_type != "local" {
+            return Err(anyhow!("Unsupported storage type {} for event {}", self.storage.storage_type, self.id));
+        }
+
+        let event_path = match self.storage.scheme {
+            StorageScheme::Deep => {
+                let re = regex::Regex::new("[-: ]").unwrap();
+                format!("{}/{}", re.replace_all(&self.start_datetime, "/"), self.id)
+            },
+            StorageScheme::Medium => format!("{}/{}", self.start_datetime.split_once(" ").unwrap().0, self.id),
+            StorageScheme::Shallow => format!("{}", self.id)
+        };
+
+        let monitor_path = self.monitor_id.to_string();
+
+        let path: PathBuf = [&self.storage.path, &monitor_path, &event_path, &self.default_video].iter().collect();
+        Ok(path)
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+enum StorageScheme {
+    Deep,
+    Medium,
+    Shallow,
+}
+
+impl TryFrom<&str> for StorageScheme {
+    type Error = anyhow::Error;
+
+    fn try_from(input: &str) -> std::result::Result<StorageScheme, Self::Error> {
+        Ok(match input {
+            "Deep" => StorageScheme::Deep,
+            "Medium" => StorageScheme::Medium,
+            "Shallow" => StorageScheme::Shallow,
+            _ => return Err(anyhow!("Invalid/unknown storage scheme {}", input)),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Storage {
+    id: u64,
+    name: String,
+    path: String,
+    storage_type: String,
+    scheme: StorageScheme,
+}
+
+fn get_storage_by_id(db: &mut mysql::Conn, storage_id: u64) -> Result<Storage> {
+    //let mut db = zm_conf.connect_db()?;
+    Ok(db.exec_map("SELECT Name, Path, Type, Scheme FROM Storage WHERE Id = :id",
+                   params! { "id" => storage_id },
+                   |(name, path, storage_type, scheme)| -> Result<Storage> {
+                       let scheme: String = scheme;
+                       Ok(Storage {
+                           id: storage_id,
+                           name,
+                           path,
+                           storage_type,
+                           scheme: StorageScheme::try_from(scheme.as_str())?,
+                       })
+                   }
+    )?.remove(0)?)
 }
 
 pub type ZoneShape = Vec<(i32, i32)>;

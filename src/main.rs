@@ -8,7 +8,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use lazy_static::lazy_static;
 use log::{debug, error, info, warn};
-use opencv::core::{Mat, Rect};
+use opencv::core::{Mat, MatTraitConst, Rect};
 use simple_moving_average::SMA;
 
 use crate::ml::Detection;
@@ -18,6 +18,7 @@ use crate::zoneminder::MonitorTrait;
 mod instrumentation;
 mod ml;
 mod zoneminder;
+mod vio;
 
 // TODO: Heed analysis images setting in ZM and generate those from within zm-aidect (sparsely, only for frames actually analyzed, not sure if the DB schema allows for that)
 
@@ -53,7 +54,14 @@ enum Mode {
     Event {
         /// Zoneminder event ID to check for detections
         #[clap(value_parser)]
-        event: u64,
+        event_id: u64,
+
+        /// Zoneminder monitor ID for the zone configuration
+        #[clap(
+            long,
+            short = 'm',
+        )]
+        monitor_id: Option<u32>,
     },
     Bench {
         /// Zoneminder monitor ID
@@ -156,8 +164,54 @@ fn main() -> Result<()> {
     match args.mode {
         Mode::Run { monitor_id } => run(monitor_id),
         Mode::Test { monitor_id } => test(monitor_id),
+        Mode::Event { event_id, monitor_id } => event(event_id, monitor_id),
         _ => panic!("Not implemented"),
     }
+}
+
+fn event(event_id: u64, monitor_id: Option<u32>) -> Result<()> {
+    let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
+    let event = zoneminder::db::Event::query(&zm_conf, event_id)?;
+    let monitor_id = monitor_id.unwrap_or(event.monitor_id);
+    let mut ctx = connect_zm(monitor_id, &zm_conf)?;  // TODO: If this errors on "Error: No aidect zone found for monitor 6", suggest --monitor-id
+
+    let video_path = event.video_path()?;
+    println!("Analyzing video file {}", video_path.display());
+    let props = vio::properties(&video_path)?;
+
+    if props.width != ctx.monitor_settings.width || props.height != ctx.monitor_settings.height {
+        println!("Note: Recording is from a different (higher?) resolution, so performance is not indicative due to rescaling");
+    }
+
+    println!("Note: Timestamps [mm:ss:ts] are at best a rough approximation.");
+    println!("Note: Because analysis start frames aren't aligned between what zm-aidect might have originally done,");
+    println!("      and this run, results can and will differ.");  // TODO: This can be a good thing of course, but maybe add a way to analyse the logged alarm frames only or something like that
+
+    let mut inference_durations = vec![];
+    let mut videotime = Duration::default();  // EXTREMELY approximate
+    let timestep = Duration::from_secs_f32(1f32 / ctx.max_fps);  // video people are crying at this
+    for image in vio::stream_file(&video_path, ctx.monitor_settings.width, ctx.monitor_settings.height, ctx.max_fps)? {
+        let result = infer(image, ctx.bounding_box, &ctx.zone_config, &mut ctx.yolo)?;
+        if result.detections.len() > 0 {
+            // TODO: How could we get the actual frame number or timestamp here?
+
+            let ts = videotime.as_secs_f32();
+            let frac = (ts.fract() * 1000f32) as u32;
+            let seconds = ts.trunc() as u32;
+            let secs = seconds % 60;
+            let mins = seconds / 60;
+
+            let description: Vec<String> = result.detections.iter().map(|d| describe(&CLASSES, &d)).collect();
+            println!("[{:02}:{:02}:{:03}] Inference took {:?}: {}", mins, secs, frac, result.duration, description.join(", "));
+        }
+        inference_durations.push(result.duration);
+        videotime += timestep;
+    }
+
+    let total_duration = inference_durations.iter().sum::<Duration>();
+    println!("Processed {} frames, total ML time {:?}, average time {:?}", inference_durations.len(), total_duration, total_duration / inference_durations.len() as u32);
+
+    Ok(())
 }
 
 struct MonitorContext<'zm_conf> {
@@ -207,8 +261,8 @@ struct Inferred {
     detections: Vec<Detection>,
 }
 
-fn infer(image: zoneminder::Image, bounding_box: Rect, zone_config: &zoneminder::db::ZoneConfig, yolo: &mut ml::YoloV4Tiny) -> Result<Inferred> {
-    let image = image.convert_to_rgb24()?;
+fn infer(image: Mat, bounding_box: Rect, zone_config: &zoneminder::db::ZoneConfig, yolo: &mut ml::YoloV4Tiny) -> Result<Inferred> {
+    assert_eq!(image.typ(), opencv::core::CV_8UC3);
     // TODO: blank remaining area outside zone polygon
     let image = Mat::roi(&image, bounding_box)?;
 
@@ -223,7 +277,15 @@ fn infer(image: zoneminder::Image, bounding_box: Rect, zone_config: &zoneminder:
             (d.bounding_box.width * d.bounding_box.height) as u32
                 > zone_config.min_area.unwrap_or(0)
         })
-        .cloned()
+        .map(|d| Detection {
+            // Adjust bounding box to zone bounding box (RoI)
+            bounding_box: Rect {
+                x: d.bounding_box.x + bounding_box.x,
+                y: d.bounding_box.y + bounding_box.y,
+                ..d.bounding_box
+            },
+            ..*d
+        })
         .collect();
 
     Ok(Inferred { duration, detections })
@@ -247,8 +309,10 @@ fn test(monitor_id: u32) -> Result<()> {
     let num_images = 3;
     println!("Grabbing {} images and running detection", num_images);
     for image in ctx.monitor.stream_images()?.take(num_images) {
-        let result = infer(image?, ctx.bounding_box, &ctx.zone_config, &mut ctx.yolo)?;
-        println!("Inference took {:?}, detections: {:#?}", result.duration, result.detections);
+        let image = image?.convert_to_rgb24()?;
+        let result = infer(image, ctx.bounding_box, &ctx.zone_config, &mut ctx.yolo)?;
+        let description: Vec<String> = result.detections.iter().map(|d| describe(&CLASSES, &d)).collect();
+        println!("Inference took {:?}: {}", result.duration, description.join(", "));
     }
 
     println!("Triggering an event on monitor {}", ctx.trigger_id);
@@ -282,7 +346,7 @@ fn run(monitor_id: u32) -> Result<()> {
 
     let process_update_event = |update: Option<coalescing::UpdateEvent>| {
         if let Some(update) = update {
-            let description = describe(&CLASSES, &ctx.bounding_box, &update.detection);
+            let description = describe(&CLASSES, &update.detection);
             if let Err(e) =
                 zoneminder::db::update_event_notes(&ctx.zm_conf, update.event_id, &description)
             {
@@ -295,7 +359,8 @@ fn run(monitor_id: u32) -> Result<()> {
     };
 
     for image in ctx.monitor.stream_images()? {
-        let Inferred { duration: inference_duration, detections } = infer(image?, ctx.bounding_box, &ctx.zone_config, &mut ctx.yolo)?;
+        let image = image?.convert_to_rgb24()?;
+        let Inferred { duration: inference_duration, detections } = infer(image, ctx.bounding_box, &ctx.zone_config, &mut ctx.yolo)?;
 
         if detections.len() > 0 {
             debug!(
@@ -308,7 +373,7 @@ fn run(monitor_id: u32) -> Result<()> {
                 .max_by_key(|d| (d.confidence * 1000.0) as u32)
                 .unwrap(); // generally there will only be one anyway
             let score = (d.confidence * 100.0) as u32;
-            let description = describe(&CLASSES, &ctx.bounding_box, &d);
+            let description = describe(&CLASSES, &d);
 
             let event_id = trigger(&ctx, &description, score)?;
             let update = event_tracker.push_detection(d.clone(), event_id);
@@ -341,7 +406,7 @@ fn run(monitor_id: u32) -> Result<()> {
     Ok(())
 }
 
-fn describe(classes: &HashMap<i32, &str>, bounding_box: &Rect, d: &Detection) -> String {
+fn describe(classes: &HashMap<i32, &str>, d: &Detection) -> String {
     format!(
         "{} ({:.1}%) {}x{} (={}) at {}x{}",
         classes[&d.class_id],
@@ -349,8 +414,8 @@ fn describe(classes: &HashMap<i32, &str>, bounding_box: &Rect, d: &Detection) ->
         d.bounding_box.width,
         d.bounding_box.height,
         d.bounding_box.width * d.bounding_box.height,
-        d.bounding_box.x + bounding_box.x,
-        d.bounding_box.y + bounding_box.y,
+        d.bounding_box.x,
+        d.bounding_box.y,
     )
 }
 
