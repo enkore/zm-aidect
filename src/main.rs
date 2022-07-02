@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::env;
-use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -17,8 +16,8 @@ use crate::zoneminder::MonitorTrait;
 
 mod instrumentation;
 mod ml;
-mod zoneminder;
 mod vio;
+mod zoneminder;
 
 // TODO: Heed analysis images setting in ZM and generate those from within zm-aidect (sparsely, only for frames actually analyzed, not sure if the DB schema allows for that)
 
@@ -57,101 +56,13 @@ enum Mode {
         event_id: u64,
 
         /// Zoneminder monitor ID for the zone configuration
-        #[clap(
-            long,
-            short = 'm',
-        )]
+        #[clap(long, short = 'm')]
         monitor_id: Option<u32>,
-    },
-    Bench {
-        /// Zoneminder monitor ID
-        #[clap(value_parser)]
-        monitor_id: i32,
-
-        /// Image files to use
-        #[clap(value_parser, required = true)]
-        images: Vec<PathBuf>,
     },
 }
 
 fn main() -> Result<()> {
     env::set_current_dir(env::current_exe()?.parent().unwrap())?;
-    /*
-    // run on raw image
-    let mut image_data = fs::read("imago_with_human.rgba")?;
-
-    let image = unsafe {
-        //let image_data = monitor.shared_images.add(image_size as usize * last_write_index as usize);
-        let image_data = image_data.as_mut_ptr();
-        let image_row_size = 1280 * 4;
-
-        Mat::new_rows_cols_with_data(1280, 720, CV_8UC4, image_data as *mut c_void, image_row_size)?
-    };
-
-    let mut rgb_image = Mat::default();
-    cvt_color(&image, &mut rgb_image, COLOR_RGBA2RGB, 0)?;
-
-    //println!("Shape: {:?}", rgb_image);
-
-    let t0 = Instant::now();
-    let detections = yolo.infer(&rgb_image)?;
-    let td = Instant::now() - t0;
-
-    println!("Inference completed in {:?}:\n{:#?}",
-             td, detections);
-
-    */
-
-    //opencv::core::set_num_threads(1);
-
-    // run on pngs
-    /* {
-        let mut yolo = ml::YoloV4Tiny::new(0.5, 256)?;
-        for file in vec![
-            "19399-video-0001.png",
-            "19399-video-0002.png",
-            "19399-video-0003.png",
-        ] {
-            println!("Processing {}", file);
-            let image = opencv::imgcodecs::imread(file, opencv::imgcodecs::IMREAD_UNCHANGED)?;
-            //println!("{:#?}", image);
-            let mut detections = HashSet::new();
-
-            // run once to ignore CUDA compilation
-            yolo.infer(&image)?;
-
-            let t0 = Instant::now();
-            let n = 80;
-            for _ in 0..n {
-                detections.extend(yolo.infer(&image)?);
-            }
-            let td = Instant::now() - t0;
-            println!("Inference completed in {:?}: {:#?}",
-                     td / n, detections);
-        }
-        return Ok(());
-    }*/
-
-    /* image should look like
-    Mat {
-        type: "CV_8UC3",
-        flags: 1124024336,
-        channels: 3,
-        depth: "CV_8U",
-        dims: 2,
-        size: Size_ {
-            width: 1280,
-            height: 720,
-        },
-        rows: 720,
-        cols: 1280,
-        elem_size: 3,
-        elem_size1: 1,
-        total: 921600,
-        is_continuous: true,
-        is_submatrix: false,
-    }
-     */
 
     let args: Args = Args::parse();
     stderrlog::new()
@@ -164,8 +75,10 @@ fn main() -> Result<()> {
     match args.mode {
         Mode::Run { monitor_id } => run(monitor_id),
         Mode::Test { monitor_id } => test(monitor_id),
-        Mode::Event { event_id, monitor_id } => event(event_id, monitor_id),
-        _ => panic!("Not implemented"),
+        Mode::Event {
+            event_id,
+            monitor_id,
+        } => event(event_id, monitor_id),
     }
 }
 
@@ -173,7 +86,7 @@ fn event(event_id: u64, monitor_id: Option<u32>) -> Result<()> {
     let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
     let event = zoneminder::db::Event::query(&zm_conf, event_id)?;
     let monitor_id = monitor_id.unwrap_or(event.monitor_id);
-    let mut ctx = connect_zm(monitor_id, &zm_conf)?;  // TODO: If this errors on "Error: No aidect zone found for monitor 6", suggest --monitor-id
+    let mut ctx = connect_zm(monitor_id, &zm_conf)?; // TODO: If this errors on "Error: No aidect zone found for monitor 6", suggest --monitor-id
 
     let video_path = event.video_path()?;
     println!("Analyzing video file {}", video_path.display());
@@ -185,12 +98,17 @@ fn event(event_id: u64, monitor_id: Option<u32>) -> Result<()> {
 
     println!("Note: Timestamps [mm:ss:ts] are at best a rough approximation.");
     println!("Note: Because analysis start frames aren't aligned between what zm-aidect might have originally done,");
-    println!("      and this run, results can and will differ.");  // TODO: This can be a good thing of course, but maybe add a way to analyse the logged alarm frames only or something like that
+    println!("      and this run, results can and will differ."); // TODO: This can be a good thing of course, but maybe add a way to analyse the logged alarm frames only or something like that
 
     let mut inference_durations = vec![];
-    let mut videotime = Duration::default();  // EXTREMELY approximate
-    let timestep = Duration::from_secs_f32(1f32 / ctx.max_fps);  // video people are crying at this
-    for image in vio::stream_file(&video_path, ctx.monitor_settings.width, ctx.monitor_settings.height, ctx.max_fps)? {
+    let mut videotime = Duration::default(); // EXTREMELY approximate
+    let timestep = Duration::from_secs_f32(1f32 / ctx.max_fps); // video people are crying at this
+    for image in vio::stream_file(
+        &video_path,
+        ctx.monitor_settings.width,
+        ctx.monitor_settings.height,
+        ctx.max_fps,
+    )? {
         let result = infer(image, ctx.bounding_box, &ctx.zone_config, &mut ctx.yolo)?;
         if result.detections.len() > 0 {
             // TODO: How could we get the actual frame number or timestamp here?
@@ -201,15 +119,31 @@ fn event(event_id: u64, monitor_id: Option<u32>) -> Result<()> {
             let secs = seconds % 60;
             let mins = seconds / 60;
 
-            let description: Vec<String> = result.detections.iter().map(|d| describe(&CLASSES, &d)).collect();
-            println!("[{:02}:{:02}:{:03}] Inference took {:?}: {}", mins, secs, frac, result.duration, description.join(", "));
+            let description: Vec<String> = result
+                .detections
+                .iter()
+                .map(|d| describe(&CLASSES, &d))
+                .collect();
+            println!(
+                "[{:02}:{:02}:{:03}] Inference took {:?}: {}",
+                mins,
+                secs,
+                frac,
+                result.duration,
+                description.join(", ")
+            );
         }
         inference_durations.push(result.duration);
         videotime += timestep;
     }
 
     let total_duration = inference_durations.iter().sum::<Duration>();
-    println!("Processed {} frames, total ML time {:?}, average time {:?}", inference_durations.len(), total_duration, total_duration / inference_durations.len() as u32);
+    println!(
+        "Processed {} frames, total ML time {:?}, average time {:?}",
+        inference_durations.len(),
+        total_duration,
+        total_duration / inference_durations.len() as u32
+    );
 
     Ok(())
 }
@@ -252,7 +186,15 @@ fn connect_zm(monitor_id: u32, zm_conf: &zoneminder::ZoneMinderConf) -> Result<M
     )?;
 
     Ok(MonitorContext {
-        zm_conf, monitor, zone_config, monitor_settings, bounding_box, yolo, max_fps, monitor_id, trigger_id
+        zm_conf,
+        monitor,
+        zone_config,
+        monitor_settings,
+        bounding_box,
+        yolo,
+        max_fps,
+        monitor_id,
+        trigger_id,
     })
 }
 
@@ -261,7 +203,12 @@ struct Inferred {
     detections: Vec<Detection>,
 }
 
-fn infer(image: Mat, bounding_box: Rect, zone_config: &zoneminder::db::ZoneConfig, yolo: &mut ml::YoloV4Tiny) -> Result<Inferred> {
+fn infer(
+    image: Mat,
+    bounding_box: Rect,
+    zone_config: &zoneminder::db::ZoneConfig,
+    yolo: &mut ml::YoloV4Tiny,
+) -> Result<Inferred> {
     assert_eq!(image.typ(), opencv::core::CV_8UC3);
     // TODO: blank remaining area outside zone polygon
     let image = Mat::roi(&image, bounding_box)?;
@@ -288,15 +235,22 @@ fn infer(image: Mat, bounding_box: Rect, zone_config: &zoneminder::db::ZoneConfi
         })
         .collect();
 
-    Ok(Inferred { duration, detections })
+    Ok(Inferred {
+        duration,
+        detections,
+    })
 }
 
 fn trigger(ctx: &MonitorContext, description: &str, score: u32) -> Result<u64> {
     Ok(if ctx.trigger_id != ctx.monitor_id {
         let trigger_monitor = zoneminder::Monitor::connect(&ctx.zm_conf, ctx.trigger_id)?;
-        trigger_monitor.trigger("aidect", description, score).with_context(|| format!("Failed to trigger monitor ID {}", ctx.trigger_id))?
+        trigger_monitor
+            .trigger("aidect", description, score)
+            .with_context(|| format!("Failed to trigger monitor ID {}", ctx.trigger_id))?
     } else {
-        ctx.monitor.trigger("aidect", description, score).with_context(|| "Failed to trigger event")?
+        ctx.monitor
+            .trigger("aidect", description, score)
+            .with_context(|| "Failed to trigger event")?
     })
 }
 
@@ -304,15 +258,26 @@ fn test(monitor_id: u32) -> Result<()> {
     let zm_conf = zoneminder::ZoneMinderConf::parse_default()?;
     let mut ctx = connect_zm(monitor_id, &zm_conf)?;
 
-    println!("Connected to monitor ID {}: {}", monitor_id, ctx.monitor_settings.name);
+    println!(
+        "Connected to monitor ID {}: {}",
+        monitor_id, ctx.monitor_settings.name
+    );
 
     let num_images = 3;
     println!("Grabbing {} images and running detection", num_images);
     for image in ctx.monitor.stream_images()?.take(num_images) {
         let image = image?.convert_to_rgb24()?;
         let result = infer(image, ctx.bounding_box, &ctx.zone_config, &mut ctx.yolo)?;
-        let description: Vec<String> = result.detections.iter().map(|d| describe(&CLASSES, &d)).collect();
-        println!("Inference took {:?}: {}", result.duration, description.join(", "));
+        let description: Vec<String> = result
+            .detections
+            .iter()
+            .map(|d| describe(&CLASSES, &d))
+            .collect();
+        println!(
+            "Inference took {:?}: {}",
+            result.duration,
+            description.join(", ")
+        );
     }
 
     println!("Triggering an event on monitor {}", ctx.trigger_id);
@@ -360,7 +325,10 @@ fn run(monitor_id: u32) -> Result<()> {
 
     for image in ctx.monitor.stream_images()? {
         let image = image?.convert_to_rgb24()?;
-        let Inferred { duration: inference_duration, detections } = infer(image, ctx.bounding_box, &ctx.zone_config, &mut ctx.yolo)?;
+        let Inferred {
+            duration: inference_duration,
+            detections,
+        } = infer(image, ctx.bounding_box, &ctx.zone_config, &mut ctx.yolo)?;
 
         if detections.len() > 0 {
             debug!(

@@ -30,14 +30,34 @@ impl VideoProperties {
 
 impl ToString for VideoProperties {
     fn to_string(&self) -> String {
-        format!("{}x{} {:.1} fps ({})", self.width, self.height, self.get_fps(), self.codec_name)
+        format!(
+            "{}x{} {:.1} fps ({})",
+            self.width,
+            self.height,
+            self.get_fps(),
+            self.codec_name
+        )
     }
 }
 
 pub fn properties(path: &Path) -> Result<VideoProperties> {
-    let output = Command::new("ffprobe").args(["-v", "error", "-print_format", "json", "-select_streams", "v:0", "-show_streams"]).arg(path).output()?;
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-select_streams",
+            "v:0",
+            "-show_streams",
+        ])
+        .arg(path)
+        .output()?;
     if !output.status.success() {
-        return Err(anyhow!("ffprobe failed: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(anyhow!(
+            "ffprobe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
     let output = String::from_utf8(output.stdout)?;
     let mut output: ProbeOutput = serde_json::from_str(&output)?;
@@ -58,9 +78,11 @@ impl Iterator for ImageStream {
             (self.width as i32, self.height as i32).into(),
             opencv::core::CV_8UC3,
             0.into(),
-        ).ok()?;
+        )
+        .ok()?;
         let image_size = self.width * self.height * 3;
-        let mut slice = unsafe { slice::from_raw_parts_mut(mat.ptr_mut(0).ok()?, image_size as usize) };
+        let mut slice =
+            unsafe { slice::from_raw_parts_mut(mat.ptr_mut(0).ok()?, image_size as usize) };
         let stdout = self.ffmpeg.stdout.as_mut()?;
         stdout.read_exact(&mut slice).ok()?;
         return Some(mat);
@@ -73,12 +95,26 @@ pub fn stream_file(path: &Path, width: u32, height: u32, framerate: f32) -> Resu
     let ffmpeg = Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
         .arg(path)
-        .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-s:v", &video_size, "-sws_flags", "neighbor", "-r", &framerate, "-"])
+        .args([
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s:v",
+            &video_size,
+            "-sws_flags",
+            "neighbor",
+            "-r",
+            &framerate,
+            "-",
+        ])
         .stdout(Stdio::piped())
         .spawn()?;
 
     Ok(ImageStream {
-        width, height, ffmpeg
+        width,
+        height,
+        ffmpeg,
     })
 }
 
@@ -148,17 +184,18 @@ mod tests {
             ]
         }"#;
 
-        assert_eq!(serde_json::from_str::<ProbeOutput>(&ffprobe)?, ProbeOutput {
-            streams: vec![
-                ProbeStream {
+        assert_eq!(
+            serde_json::from_str::<ProbeOutput>(&ffprobe)?,
+            ProbeOutput {
+                streams: vec![ProbeStream {
                     index: 0,
                     codec_name: "h264".to_string(),
                     avg_frame_rate: "224800/7491".to_string(),
                     width: 1920,
                     height: 1080,
-                }
-            ]
-        });
+                }]
+            }
+        );
         Ok(())
     }
 }

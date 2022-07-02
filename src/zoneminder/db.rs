@@ -23,11 +23,7 @@ impl ZoneMinderDB for ZoneMinderConf {
     }
 }
 
-pub fn update_event_notes(
-    zm_conf: &ZoneMinderConf,
-    event_id: u64,
-    notes: &str,
-) -> Result<()> {
+pub fn update_event_notes(zm_conf: &ZoneMinderConf, event_id: u64, notes: &str) -> Result<()> {
     let mut db = zm_conf.connect_db()?;
     Ok(db.exec_drop(
         "UPDATE Events SET Notes = :notes WHERE Id = :id",
@@ -51,10 +47,7 @@ pub struct MonitorSettings {
 }
 
 impl MonitorSettings {
-    pub fn query(
-        zm_conf: &ZoneMinderConf,
-        monitor_id: u32,
-    ) -> Result<MonitorSettings> {
+    pub fn query(zm_conf: &ZoneMinderConf, monitor_id: u32) -> Result<MonitorSettings> {
         let mut db = zm_conf.connect_db()?;
         Ok(db.exec_map("SELECT Name, StorageId, Enabled, Width, Height, Colours, ImageBufferCount, AnalysisFPSLimit FROM Monitors WHERE Id = :id",
                        params! { "id" => monitor_id },
@@ -83,19 +76,19 @@ pub struct Event {
     pub avg_score: u32,
     pub total_score: u32,
     default_video: String,
-    start_datetime: String,  // local time, 2022-01-27 18:45:59
+    start_datetime: String, // local time, 2022-01-27 18:45:59
 
     storage: Storage,
 }
 
 impl Event {
-    pub fn query(
-        zm_conf: &ZoneMinderConf,
-        event_id: u64,
-    ) -> Result<Event> {
+    pub fn query(zm_conf: &ZoneMinderConf, event_id: u64) -> Result<Event> {
         let mut db = zm_conf.connect_db()?;
 
-        let storage_id = db.exec_first("SELECT StorageId FROM Events WHERE Id = :id", params!{ "id" => event_id })?;
+        let storage_id = db.exec_first(
+            "SELECT StorageId FROM Events WHERE Id = :id",
+            params! { "id" => event_id },
+        )?;
         let storage = get_storage_by_id(&mut db, storage_id.unwrap())?;
 
         // the "date time" handling here is janky af but sufficient for what's needed (only used to derive the file name)
@@ -119,21 +112,36 @@ impl Event {
 
     pub fn video_path(&self) -> Result<PathBuf> {
         if self.storage.storage_type != "local" {
-            return Err(anyhow!("Unsupported storage type {} for event {}", self.storage.storage_type, self.id));
+            return Err(anyhow!(
+                "Unsupported storage type {} for event {}",
+                self.storage.storage_type,
+                self.id
+            ));
         }
 
         let event_path = match self.storage.scheme {
             StorageScheme::Deep => {
                 let re = regex::Regex::new("[-: ]").unwrap();
                 format!("{}/{}", re.replace_all(&self.start_datetime, "/"), self.id)
-            },
-            StorageScheme::Medium => format!("{}/{}", self.start_datetime.split_once(" ").unwrap().0, self.id),
-            StorageScheme::Shallow => format!("{}", self.id)
+            }
+            StorageScheme::Medium => format!(
+                "{}/{}",
+                self.start_datetime.split_once(" ").unwrap().0,
+                self.id
+            ),
+            StorageScheme::Shallow => format!("{}", self.id),
         };
 
         let monitor_path = self.monitor_id.to_string();
 
-        let path: PathBuf = [&self.storage.path, &monitor_path, &event_path, &self.default_video].iter().collect();
+        let path: PathBuf = [
+            &self.storage.path,
+            &monitor_path,
+            &event_path,
+            &self.default_video,
+        ]
+        .iter()
+        .collect();
         Ok(path)
     }
 }
@@ -160,7 +168,9 @@ impl TryFrom<&str> for StorageScheme {
 
 #[derive(Debug, Clone)]
 struct Storage {
+    #[allow(dead_code)]
     id: u64,
+    #[allow(dead_code)]
     name: String,
     path: String,
     storage_type: String,
@@ -169,19 +179,22 @@ struct Storage {
 
 fn get_storage_by_id(db: &mut mysql::Conn, storage_id: u64) -> Result<Storage> {
     //let mut db = zm_conf.connect_db()?;
-    Ok(db.exec_map("SELECT Name, Path, Type, Scheme FROM Storage WHERE Id = :id",
-                   params! { "id" => storage_id },
-                   |(name, path, storage_type, scheme)| -> Result<Storage> {
-                       let scheme: String = scheme;
-                       Ok(Storage {
-                           id: storage_id,
-                           name,
-                           path,
-                           storage_type,
-                           scheme: StorageScheme::try_from(scheme.as_str())?,
-                       })
-                   }
-    )?.remove(0)?)
+    Ok(db
+        .exec_map(
+            "SELECT Name, Path, Type, Scheme FROM Storage WHERE Id = :id",
+            params! { "id" => storage_id },
+            |(name, path, storage_type, scheme)| -> Result<Storage> {
+                let scheme: String = scheme;
+                Ok(Storage {
+                    id: storage_id,
+                    name,
+                    path,
+                    storage_type,
+                    scheme: StorageScheme::try_from(scheme.as_str())?,
+                })
+            },
+        )?
+        .remove(0)?)
 }
 
 pub type ZoneShape = Vec<(i32, i32)>;
@@ -219,16 +232,14 @@ pub struct ZoneConfig {
 }
 
 impl ZoneConfig {
-    pub fn get_zone_config(
-        zm_conf: &ZoneMinderConf,
-        monitor_id: u32,
-    ) -> Result<ZoneConfig> {
+    pub fn get_zone_config(zm_conf: &ZoneMinderConf, monitor_id: u32) -> Result<ZoneConfig> {
         let mut db = zm_conf.connect_db()?;
         let dbzone = db.exec_first(
             "SELECT Name, Type, Coords FROM Zones WHERE MonitorId = :id AND Name LIKE \"aidect%\"",
             params! { "id" => monitor_id },
         )?;
-        let dbzone: mysql::Row = dbzone.ok_or(anyhow!("No aidect zone found for monitor {}", monitor_id))?;
+        let dbzone: mysql::Row =
+            dbzone.ok_or(anyhow!("No aidect zone found for monitor {}", monitor_id))?;
 
         Ok(ZoneConfig::parse(
             &dbzone.get::<String, &str>("Name").unwrap(),

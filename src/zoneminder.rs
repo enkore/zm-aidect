@@ -95,7 +95,16 @@ impl<'this> MonitorTrait<'this> for Monitor<'this> {
 impl Monitor<'_> {
     pub fn connect(zm_conf: &ZoneMinderConf, monitor_id: u32) -> Result<Monitor> {
         let mmap_path = format!("{}/zm.mmap.{}", zm_conf.mmap_path, monitor_id);
-        let file = OpenOptions::new().read(true).write(true).open(&mmap_path).with_context(|| format!("Failed to open mmap file {} for monitor {}", mmap_path, monitor_id))?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&mmap_path)
+            .with_context(|| {
+                format!(
+                    "Failed to open mmap file {} for monitor {}",
+                    mmap_path, monitor_id
+                )
+            })?;
 
         let trigger_data_offset = size_of::<shm::MonitorSharedData>();
         let videostore_data_offset = trigger_data_offset + size_of::<shm::MonitorTriggerData>();
@@ -139,8 +148,12 @@ impl Monitor<'_> {
     }
 
     fn read(&self) -> Result<MonitorState> {
-        let shared_data: shm::MonitorSharedData = self.pread(0).with_context(|| format!("Failed to read shared data"))?;
-        let trigger_data: shm::MonitorTriggerData = self.pread(self.trigger_data_offset).with_context(|| format!("Failed to read trigger data"))?;
+        let shared_data: shm::MonitorSharedData = self
+            .pread(0)
+            .with_context(|| format!("Failed to read shared data"))?;
+        let trigger_data: shm::MonitorTriggerData = self
+            .pread(self.trigger_data_offset)
+            .with_context(|| format!("Failed to read trigger data"))?;
         if shared_data.valid == 0 {
             return Err(anyhow!("Monitor shm is not valid"));
         }
@@ -177,7 +190,11 @@ impl Monitor<'_> {
     fn check_file_stale(&self) -> Result<()> {
         // Additional sanity check, if the file-on-tmpfs is now a different file, we're definitely listening to a stranger.
         // ZM seems to be quite good about ensuring shared_data.valid gets flipped to 0 even when zmc crashes though.
-        if fs::metadata(&self.mmap_path).with_context(|| format!("Monitor mmap file {} does not exist", self.mmap_path))?.ino() != self.ino {
+        if fs::metadata(&self.mmap_path)
+            .with_context(|| format!("Monitor mmap file {} does not exist", self.mmap_path))?
+            .ino()
+            != self.ino
+        {
             return Err(anyhow!("Monitor shm fd is stale, must reconnect"));
         }
         Ok(())
@@ -272,7 +289,10 @@ impl ImageStream<'_> {
             {
                 self.last_read_index = last_write_index;
                 let image = self.read_image(last_write_index)?;
-                return Ok(Image { image, format: self.format });
+                return Ok(Image {
+                    image,
+                    format: self.format,
+                });
             }
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -296,7 +316,10 @@ impl ImageStream<'_> {
         let mut slice =
             unsafe { slice::from_raw_parts_mut(mat.ptr_mut(0)?, self.image_size as usize) };
         let image_offset = self.shared_images_offset as u64 + self.image_size as u64 * index as u64;
-        self.monitor.file.read_exact_at(&mut slice, image_offset).with_context(|| "Failed to read image")?;
+        self.monitor
+            .file
+            .read_exact_at(&mut slice, image_offset)
+            .with_context(|| "Failed to read image")?;
         Ok(())
     }
 }
@@ -344,10 +367,13 @@ impl ZoneMinderConf {
     pub fn parse_default() -> Result<ZoneMinderConf> {
         let zm_conf = "/etc/zm/zm.conf";
         let zm_conf_d = "/etc/zm/conf.d";
-        let contents = fs::read_to_string(zm_conf).with_context(|| format!("Failed to parse Zoneminder configuration file {}", zm_conf))?;
+        let contents = fs::read_to_string(zm_conf).with_context(|| {
+            format!("Failed to parse Zoneminder configuration file {}", zm_conf)
+        })?;
         let contents = contents
             + "\n"
-            + &fs::read_dir(zm_conf_d).with_context(|| format!("Failed to read Zoneminder overrides from {}", zm_conf_d))?
+            + &fs::read_dir(zm_conf_d)
+                .with_context(|| format!("Failed to read Zoneminder overrides from {}", zm_conf_d))?
                 .filter_map(Result::ok)
                 .map(|entry| fs::read_to_string(entry.path()))
                 .filter_map(Result::ok)
