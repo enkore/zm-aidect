@@ -184,10 +184,9 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ProbeOutput>(&ffprobe)?,
             ProbeOutput {
-                streams: vec![ProbeStream {
-                    index: 0,
+                streams: vec![VideoProperties {
                     codec_name: "h264".to_string(),
-                    avg_frame_rate: "224800/7491".to_string(),
+                    avg_frame_rate: "2248/74".to_string(),
                     width: 1920,
                     height: 1080,
                 }]
