@@ -46,7 +46,7 @@ lto = true
 opt-level = "z"
 # -rwxr-xr-x 1 root root  6622352 Jun 13 18:27 zm-aidect
 
-strip = true
+#strip = true
 # -rwxr-xr-x 1 root root  3512792 Jun 13 18:28 zm-aidect
 
 panic = "abort"

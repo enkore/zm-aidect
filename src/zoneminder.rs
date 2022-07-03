@@ -1,9 +1,8 @@
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::mem::size_of;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::time::Duration;
-use std::{fs, slice};
 
 use anyhow::{anyhow, Context, Result};
 use libc::timeval;
@@ -31,11 +30,8 @@ pub struct Monitor<'zmconf> {
     zm_conf: &'zmconf ZoneMinderConf,
 
     mmap_path: String,
-    file: File,
     ino: u64,
-
-    trigger_data_offset: usize,
-    videostore_data_offset: usize,
+    shm: shm::MonitorShm<File>,
 }
 
 impl<'this> MonitorTrait<'this> for Monitor<'this> {
@@ -47,10 +43,11 @@ impl<'this> MonitorTrait<'this> for Monitor<'this> {
         let image_buffer_count = settings.image_buffer_count;
 
         // now that we have the image buffer size we can figure the dynamic offsets out
-        let shared_timestamps_offset =
-            self.videostore_data_offset + size_of::<shm::MonitorVideoStoreData>();
+        let shared_timestamps_offset = self.shm.read_field::<u32>(shm::ShmField::SHARED_SIZE)?
+            + self.shm.read_field::<u32>(shm::ShmField::TRIGGER_SIZE)?
+            + self.shm.read_field::<u32>(shm::ShmField::VIDEOSTORE_SIZE)?;
         let shared_images_offset =
-            shared_timestamps_offset + image_buffer_count as usize * size_of::<timeval>();
+            shared_timestamps_offset as usize + image_buffer_count as usize * size_of::<timeval>();
         let shared_images_offset = shared_images_offset + 64 - (shared_images_offset % 64);
 
         Ok(ImageStream {
@@ -59,14 +56,14 @@ impl<'this> MonitorTrait<'this> for Monitor<'this> {
             image_buffer_count,
             monitor: self,
             last_read_index: image_buffer_count,
-            image_size: state.shared_data.imagesize,
-            format: state.shared_data.format,
+            image_size: state.imagesize,
+            format: state.format,
             shared_images_offset: shared_images_offset as u64,
         })
     }
 
     fn is_idle(&self) -> Result<bool> {
-        Ok(self.read()?.shared_data.state == shm::MonitorState::Idle)
+        Ok(self.read()?.state == shm::MonitorState::Idle)
     }
 
     /// Mark at least one frame as an alarm frame with the given score. Wait for event to be created,
@@ -75,7 +72,7 @@ impl<'this> MonitorTrait<'this> for Monitor<'this> {
         let poll_interval = 10;
         self.set_trigger(cause, description, score)?;
         for n in 0.. {
-            let state = self.read()?.shared_data.state;
+            let state = self.read()?.state;
             // Alarm sorta implies that we just triggered an alarm frame, while
             // Alert sorta implies there's an on-going event.
             // Wait for Alarm state to become active so that the frame is marked.
@@ -88,7 +85,7 @@ impl<'this> MonitorTrait<'this> for Monitor<'this> {
             }
         }
         self.reset_trigger()?;
-        Ok(self.read()?.shared_data.last_event_id)
+        Ok(self.read()?.last_event_id)
     }
 }
 
@@ -106,85 +103,50 @@ impl Monitor<'_> {
                 )
             })?;
 
-        let trigger_data_offset = size_of::<shm::MonitorSharedData>();
-        let videostore_data_offset = trigger_data_offset + size_of::<shm::MonitorTriggerData>();
-
         Ok(Monitor {
             monitor_id,
             zm_conf,
             mmap_path,
             ino: file.metadata()?.ino(),
-            file,
-
-            trigger_data_offset,
-            videostore_data_offset,
+            shm: shm::MonitorShm::new(file)?,
         })
     }
 
     fn set_trigger(&self, cause: &str, description: &str, score: u32) -> Result<()> {
-        let cause = cause.as_bytes();
-        let description = description.as_bytes();
-
-        let mut trigger_data = self.read()?.trigger_data;
-        trigger_data.trigger_cause[..cause.len()].copy_from_slice(cause);
-        trigger_data.trigger_text[..description.len()].copy_from_slice(description);
-        trigger_data.trigger_showtext.fill(0);
-        trigger_data.trigger_score = score;
+        self.shm.write_string(shm::ShmField::TRIGGER_CAUSE, cause)?;
+        self.shm
+            .write_string(shm::ShmField::TRIGGER_TEXT, description)?;
+        self.shm.write_string(shm::ShmField::TRIGGER_SHOWTEXT, "")?;
+        self.shm.write_field(shm::ShmField::TRIGGER_SCORE, &score)?;
         // all of this is terribly racy but pwritin' the data before the state change should reduce the odds of problems
-        self.pwrite(self.trigger_data_offset, &trigger_data)?;
-        trigger_data.trigger_state = shm::TriggerState::TriggerOn;
-        self.pwrite(self.trigger_data_offset, &trigger_data)
+        self.shm
+            .write_field(shm::ShmField::TRIGGER_STATE, &shm::TriggerState::TriggerOn)
     }
 
     fn reset_trigger(&self) -> Result<()> {
-        let mut trigger_data = self.read()?.trigger_data;
-        trigger_data.trigger_cause.fill(0);
-        trigger_data.trigger_text.fill(0);
-        trigger_data.trigger_showtext.fill(0);
-        trigger_data.trigger_score = 0;
-        self.pwrite(self.trigger_data_offset, &trigger_data)?;
-        trigger_data.trigger_state = shm::TriggerState::TriggerCancel;
-        self.pwrite(self.trigger_data_offset, &trigger_data)
+        self.shm.write_string(shm::ShmField::TRIGGER_CAUSE, "")?;
+        self.shm.write_string(shm::ShmField::TRIGGER_TEXT, "")?;
+        self.shm.write_string(shm::ShmField::TRIGGER_SHOWTEXT, "")?;
+        self.shm.write_field(shm::ShmField::TRIGGER_SCORE, &0)?;
+        self.shm.write_field(
+            shm::ShmField::TRIGGER_STATE,
+            &shm::TriggerState::TriggerCancel,
+        )
     }
 
     fn read(&self) -> Result<MonitorState> {
-        let shared_data: shm::MonitorSharedData = self
-            .pread(0)
-            .with_context(|| format!("Failed to read shared data"))?;
-        let trigger_data: shm::MonitorTriggerData = self
-            .pread(self.trigger_data_offset)
-            .with_context(|| format!("Failed to read trigger data"))?;
-        if shared_data.valid == 0 {
+        if self.shm.read_field::<u8>(shm::ShmField::VALID)? == 0 {
             return Err(anyhow!("Monitor shm is not valid"));
         }
         self.check_file_stale()?;
-        assert_eq!(
-            shared_data.size as usize,
-            size_of::<shm::MonitorSharedData>(),
-            "Invalid SHM shared_data size, incompatible ZoneMinder version"
-        );
-        assert_eq!(
-            trigger_data.size as usize,
-            size_of::<shm::MonitorTriggerData>(),
-            "Invalid SHM trigger_data size, incompatible ZoneMinder version"
-        );
+
         Ok(MonitorState {
-            shared_data,
-            trigger_data,
+            last_write_index: self.shm.read_field(shm::ShmField::LAST_WRITE_INDEX)?,
+            state: self.shm.read_field(shm::ShmField::STATE)?,
+            last_event_id: self.shm.read_field(shm::ShmField::LAST_EVENT_ID)?,
+            format: self.shm.read_field(shm::ShmField::FORMAT)?,
+            imagesize: self.shm.read_field(shm::ShmField::IMAGESIZE)?,
         })
-    }
-
-    fn pread<T>(&self, offset: usize) -> Result<T> {
-        let mut buf = Vec::new();
-        buf.resize(size_of::<T>(), 0);
-        self.file.read_exact_at(&mut buf, offset as u64)?;
-        unsafe { Ok(std::ptr::read(buf.as_ptr() as *const _)) }
-    }
-
-    fn pwrite<T>(&self, offset: usize, data: &T) -> Result<()> {
-        let data = unsafe { slice::from_raw_parts(data as *const T as *const u8, size_of::<T>()) };
-        self.file.write_all_at(data, offset as u64)?;
-        Ok(())
     }
 
     fn check_file_stale(&self) -> Result<()> {
@@ -283,7 +245,7 @@ impl ImageStream<'_> {
     fn wait_for_image(&mut self) -> Result<Image> {
         loop {
             let state = self.monitor.read()?;
-            let last_write_index = state.shared_data.last_write_index as u32;
+            let last_write_index = state.last_write_index as u32;
             if last_write_index != self.last_read_index
                 && last_write_index != self.image_buffer_count
             {
@@ -316,6 +278,7 @@ impl ImageStream<'_> {
         let mut slice = mat.data_bytes_mut()?;
         let image_offset = self.shared_images_offset as u64 + self.image_size as u64 * index as u64;
         self.monitor
+            .shm
             .file
             .read_exact_at(&mut slice, image_offset)
             .with_context(|| "Failed to read image")?;
@@ -332,8 +295,11 @@ impl Iterator for ImageStream<'_> {
 }
 
 struct MonitorState {
-    shared_data: shm::MonitorSharedData,
-    trigger_data: shm::MonitorTriggerData,
+    pub last_write_index: i32,
+    pub state: shm::MonitorState,
+    pub last_event_id: u64,
+    pub format: shm::SubpixelOrder,
+    pub imagesize: u32,
 }
 
 #[derive(Debug)]
