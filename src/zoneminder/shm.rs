@@ -420,38 +420,35 @@ sub zmMemInit {
     fn test_parse_memory_pm() {
         assert_eq!(
             parse_memory_pm(INPUT),
-            vec![
-                ParsedStruct {
-                    name: "SharedData".into(),
-                    fields: vec![
-                        ParsedField {
-                            name: "size".into(),
-                            typ: Type::new::<u32>()
-                        },
-                        ParsedField {
-                            name: "startup_time".into(),
-                            typ: Type::new::<time_t>()
-                        },
-                        ParsedField {
-                            name: "audio_fifo".into(),
-                            typ: Type::new::<i8>().array_of(64)
-                        },
-                    ],
-                },
-                ParsedStruct {
-                    name: "TriggerData".into(),
-                    fields: vec![
-                        ParsedField {
-                            name: "size".into(),
-                            typ: Type::new::<u32>()
-                        },
-                        ParsedField {
-                            name: "trigger_cause".into(),
-                            typ: Type::new::<i8>().array_of(32)
-                        },
-                    ],
-                },
-            ]
+            ParsedStruct {
+                name: "memory".into(),
+                fields: vec![
+                    ParsedField {
+                        name: "SharedData::size".into(),
+                        typ: Type::new::<u32>()
+                    },
+                    ParsedField {
+                        name: "SharedData::startup_time".into(),
+                        typ: Type::new::<time_t>()
+                    },
+                    ParsedField {
+                        name: "SharedData::audio_fifo".into(),
+                        typ: Type::new::<i8>().array_of(64)
+                    },
+                    ParsedField {
+                        name: "TriggerData::size".into(),
+                        typ: Type::new::<u32>()
+                    },
+                    ParsedField {
+                        name: "TriggerData::trigger_cause".into(),
+                        typ: Type::new::<i8>().array_of(32)
+                    },
+                    ParsedField {
+                        name: "VideoStoreData::size".into(),
+                        typ: Type::new::<u32>()
+                    },
+                ],
+            },
         );
     }
 
@@ -467,45 +464,42 @@ sub zmMemInit {
     fn test_read_memory_pm() {
         assert_eq!(
             read_memory_pm(INPUT.as_bytes()).unwrap(),
-            vec![
-                Struct {
-                    name: "SharedData".into(),
-                    size: 4 + 4 + 8 + 64,
-                    fields: vec![
-                        Field {
-                            name: "size".into(),
-                            typ: Type::new::<u32>(),
-                            offset: 0,
-                        },
-                        Field {
-                            name: "startup_time".into(),
-                            typ: Type::new::<time_t>(),
-                            offset: align_of::<time_t>(),
-                        },
-                        Field {
-                            name: "audio_fifo".into(),
-                            typ: Type::new::<i8>().array_of(64),
-                            offset: align_of::<time_t>() + 8,
-                        },
-                    ],
-                },
-                Struct {
-                    name: "TriggerData".into(),
-                    size: 4 + 32,
-                    fields: vec![
-                        Field {
-                            name: "size".into(),
-                            typ: Type::new::<u32>(),
-                            offset: 0,
-                        },
-                        Field {
-                            name: "trigger_cause".into(),
-                            typ: Type::new::<i8>().array_of(32),
-                            offset: 4,
-                        },
-                    ],
-                },
-            ]
+            Struct {
+                name: "memory".into(),
+                size: 4 + 4 + 8 + 64 + 4 + 32 + 4,
+                fields: vec![
+                    Field {
+                        name: "SharedData::size".into(),
+                        typ: Type::new::<u32>(),
+                        offset: 0,
+                    },
+                    Field {
+                        name: "SharedData::startup_time".into(),
+                        typ: Type::new::<time_t>(),
+                        offset: align_of::<time_t>(),
+                    },
+                    Field {
+                        name: "SharedData::audio_fifo".into(),
+                        typ: Type::new::<i8>().array_of(64),
+                        offset: align_of::<time_t>() + 8,
+                    },
+                    Field {
+                        name: "TriggerData::size".into(),
+                        typ: Type::new::<u32>(),
+                        offset: align_of::<time_t>() + 8 + 64,
+                    },
+                    Field {
+                        name: "TriggerData::trigger_cause".into(),
+                        typ: Type::new::<i8>().array_of(32),
+                        offset: align_of::<time_t>() + 8 + 64 + 4,
+                    },
+                    Field {
+                        name: "VideoStoreData::size".into(),
+                        typ: Type::new::<u32>(),
+                        offset: align_of::<time_t>() + 8 + 64 + 4 + 32,
+                    },
+                ],
+            },
         );
     }
 }
