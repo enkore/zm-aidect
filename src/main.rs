@@ -366,7 +366,9 @@ fn run(monitor_id: u32, instrumentation_address: Option<String>, instrumentation
 
         pacemaker.tick();
         watchdog.reset();
-        instrumentation::FPS.set(pacemaker.current_frequency() as f64);
+        let current_fps = pacemaker.current_frequency() as f64;
+        instrumentation::FPS.set(current_fps);
+        instrumentation::FPS_DEVIATION.set(current_fps - ctx.max_fps as f64);
     }
     Ok(())
 }

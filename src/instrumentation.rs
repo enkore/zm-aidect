@@ -9,6 +9,7 @@ lazy_static! {
     pub static ref INFERENCE_DURATION: Histogram = register_histogram!("inference_duration", "Duration of ML inference in ms", DEFAULT_BUCKETS[0..].into()).unwrap();
     pub static ref INFERENCES: Counter = register_counter!("inferences", "Number of ML inferences").unwrap();
     pub static ref FPS: Gauge = register_gauge!("fps", "Current fps").unwrap();
+    pub static ref FPS_DEVIATION: Gauge = register_gauge!("fps_deviation", "Current deviation from configured fps (positive=faster, negative=slower)").unwrap();
 }
 
 fn collect() -> String {
