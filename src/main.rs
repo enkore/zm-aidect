@@ -12,7 +12,7 @@ use simple_moving_average::SMA;
 
 use crate::ml::Detection;
 use crate::zoneminder::db::Bounding;
-use crate::zoneminder::MonitorTrait;
+use crate::zoneminder::{MonitorTrait};
 
 mod instrumentation;
 mod ml;
@@ -154,13 +154,12 @@ fn event(event_id: u64, monitor_id: Option<u32>) -> Result<()> {
 struct MonitorContext<'zm_conf> {
     zm_conf: &'zm_conf zoneminder::ZoneMinderConf,
     monitor: zoneminder::Monitor<'zm_conf>,
+    trigger_monitor: zoneminder::Monitor<'zm_conf>,
     zone_config: zoneminder::db::ZoneConfig,
     monitor_settings: zoneminder::db::MonitorSettings,
     bounding_box: Rect,
     yolo: ml::YoloV4Tiny,
     max_fps: f32,
-    monitor_id: u32,
-    trigger_id: u32,
 }
 
 fn connect_zm(monitor_id: u32, zm_conf: &zoneminder::ZoneMinderConf) -> Result<MonitorContext> {
@@ -181,6 +180,7 @@ fn connect_zm(monitor_id: u32, zm_conf: &zoneminder::ZoneMinderConf) -> Result<M
     let max_fps = max_fps.ok_or(anyhow!("No analysis FPS limit set - set either \"Analysis FPS\" in the Zoneminder web console, or set the FPS key in the aidect zone."))?;
 
     let trigger_id = zone_config.trigger.unwrap_or(monitor_id);
+    let trigger_monitor = zoneminder::Monitor::connect(zm_conf, trigger_id)?;
 
     let yolo = ml::YoloV4Tiny::new(
         zone_config.threshold.unwrap_or(0.5),
@@ -191,13 +191,12 @@ fn connect_zm(monitor_id: u32, zm_conf: &zoneminder::ZoneMinderConf) -> Result<M
     Ok(MonitorContext {
         zm_conf,
         monitor,
+        trigger_monitor,
         zone_config,
         monitor_settings,
         bounding_box,
         yolo,
         max_fps,
-        monitor_id,
-        trigger_id,
     })
 }
 
@@ -245,16 +244,9 @@ fn infer(
 }
 
 fn trigger(ctx: &MonitorContext, description: &str, score: u32) -> Result<u64> {
-    Ok(if ctx.trigger_id != ctx.monitor_id {
-        let trigger_monitor = zoneminder::Monitor::connect(&ctx.zm_conf, ctx.trigger_id)?;
-        trigger_monitor
-            .trigger("aidect", description, score)
-            .with_context(|| format!("Failed to trigger monitor ID {}", ctx.trigger_id))?
-    } else {
-        ctx.monitor
-            .trigger("aidect", description, score)
-            .with_context(|| "Failed to trigger event")?
-    })
+    ctx.trigger_monitor
+        .trigger("aidect", description, score)
+        .with_context(|| format!("Failed to trigger monitor ID {}", ctx.trigger_monitor.id()))
 }
 
 fn test(monitor_id: u32) -> Result<()> {
@@ -283,7 +275,7 @@ fn test(monitor_id: u32) -> Result<()> {
         );
     }
 
-    println!("Triggering an event on monitor {}", ctx.trigger_id);
+    println!("Triggering an event on monitor {}", ctx.trigger_monitor.id());
     let event_id = trigger(&ctx, "zm-aidect test", 1)?;
     println!("Success, event ID is {}", event_id);
 
@@ -314,7 +306,7 @@ fn run(monitor_id: u32, instrumentation_address: Option<String>, instrumentation
     // watchdog is set to 20x max_fps frame interval
     let watchdog = ThreadedWatchdog::new(Duration::from_secs_f32(20.0 / ctx.max_fps));
 
-    let process_update_event = |update: Option<coalescing::UpdateEvent>| {
+    fn process_update_event(ctx: &MonitorContext, update: Option<coalescing::UpdateEvent>) {
         if let Some(update) = update {
             let description = describe(&CLASSES, &update.detection);
             if let Err(e) =
@@ -322,11 +314,11 @@ fn run(monitor_id: u32, instrumentation_address: Option<String>, instrumentation
             {
                 error!(
                     "{}: Failed to update event {} notes: {}",
-                    ctx.trigger_id, update.event_id, e
+                    ctx.trigger_monitor.id(), update.event_id, e
                 );
             }
         }
-    };
+    }
 
     for image in ctx.monitor.stream_images()? {
         let image = image?.convert_to_rgb24()?;
@@ -348,18 +340,18 @@ fn run(monitor_id: u32, instrumentation_address: Option<String>, instrumentation
             let score = (d.confidence * 100.0) as u32;
             let description = describe(&CLASSES, &d);
 
-            let event_id = trigger(&ctx, &description, score)?;
+            let event_id =  trigger(&ctx, &description, score)?;
             let update = event_tracker.push_detection(d.clone(), event_id);
-            process_update_event(update);
+            process_update_event(&ctx, update);
         }
 
-        if ctx.monitor.is_idle()? {
+        if ctx.trigger_monitor.is_idle()? {
             // Not recording any more, flush current event description if any
             let update = event_tracker.clear();
             if update.is_some() {
                 debug!("Flushing event because idle");
             }
-            process_update_event(update);
+            process_update_event(&ctx, update);
         }
 
         if inference_duration.as_secs_f32() > pacemaker.target_interval {

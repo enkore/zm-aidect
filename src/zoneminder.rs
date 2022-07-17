@@ -23,6 +23,8 @@ pub trait MonitorTrait<'this> {
     fn is_idle(&self) -> Result<bool>;
 
     fn trigger(&self, cause: &str, description: &str, score: u32) -> Result<u64>;
+
+    fn id(&self) -> u32;
 }
 
 pub struct Monitor<'zmconf> {
@@ -86,6 +88,10 @@ impl<'this> MonitorTrait<'this> for Monitor<'this> {
         }
         self.reset_trigger()?;
         Ok(self.read()?.last_event_id)
+    }
+
+    fn id(&self) -> u32 {
+        self.monitor_id
     }
 }
 
