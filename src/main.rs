@@ -184,11 +184,15 @@ fn connect_zm(monitor_id: u32, zm_conf: &zoneminder::ZoneMinderConf) -> Result<M
     info!("{}: Connecting to trigger monitor {}", monitor_id, trigger_id);
     let trigger_monitor = zoneminder::Monitor::connect(zm_conf, trigger_id)?;
 
+    let size = zone_config.size.unwrap_or(256);
+    let threshold = zone_config.threshold.unwrap_or(0.5);
     let yolo = ml::YoloV4Tiny::new(
-        zone_config.threshold.unwrap_or(0.5),
-        zone_config.size.unwrap_or(256),
+        threshold,
+        size,
         false,
     )?;
+
+    instrumentation::SIZE.set(size as f64);
 
     Ok(MonitorContext {
         zm_conf,

@@ -10,6 +10,7 @@ lazy_static! {
     pub static ref INFERENCES: Counter = register_counter!("inferences", "Number of ML inferences").unwrap();
     pub static ref FPS: Gauge = register_gauge!("fps", "Current fps").unwrap();
     pub static ref FPS_DEVIATION: Gauge = register_gauge!("fps_deviation", "Current deviation from configured fps (positive=faster, negative=slower)").unwrap();
+    pub static ref SIZE: Gauge = register_gauge!("size", "ML network input size").unwrap();
 }
 
 fn collect() -> String {
