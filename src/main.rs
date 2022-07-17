@@ -326,6 +326,13 @@ fn run(monitor_id: u32, instrumentation_address: Option<String>, instrumentation
         }
     }
 
+    // For yolov4-tiny and moderate input sizes, multithreading does speed things up, but at the expense
+    // of higher overall CPU usage. As you would usually have multiple zm-aidect processes running, as
+    // well as zmc, there is no particular need for a single zm-aidect process to scale to multiple cores,
+    // especially when that comes with an efficiency hit. Large inputs and/or high framerates aren't
+    // sensible on a CPU anyway.
+    opencv::core::set_num_threads(1)?;
+
     for image in ctx.monitor.stream_images()? {
         let image = image?.convert_to_rgb24()?;
         let Inferred {
