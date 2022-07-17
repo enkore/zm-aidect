@@ -227,7 +227,7 @@ pub struct ZoneConfig {
     pub threshold: Option<f32>,
     pub shape: ZoneShape,
     pub trigger: Option<u32>,
-    pub fps: Option<u32>,
+    pub fps: Option<f32>,
     pub min_area: Option<u32>,
 }
 
@@ -263,6 +263,7 @@ impl ZoneConfig {
             .collect();
 
         let get_int = |key| keys.get(key).and_then(|v| v.trim().parse::<u32>().ok());
+        let get_f32 = |key| keys.get(key).and_then(|v| v.trim().parse::<f32>().ok());
 
         ZoneConfig {
             shape: Vec::new(),
@@ -272,7 +273,7 @@ impl ZoneConfig {
                 .map(|v| v / 100.0),
             size: get_int("Size"),
             trigger: get_int("Trigger"),
-            fps: get_int("FPS"),
+            fps: get_f32("FPS"),
             min_area: get_int("MinArea"),
         }
     }

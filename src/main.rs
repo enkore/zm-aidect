@@ -176,10 +176,12 @@ fn connect_zm(monitor_id: u32, zm_conf: &zoneminder::ZoneMinderConf) -> Result<M
     info!("{}: Picked up zone bounds {:?}", monitor_id, bounding_box);
 
     let max_fps = monitor_settings.analysis_fps_limit;
-    let max_fps = zone_config.fps.map(|v| v as f32).or(max_fps);
+    let max_fps = zone_config.fps.or(max_fps);
     let max_fps = max_fps.ok_or(anyhow!("No analysis FPS limit set - set either \"Analysis FPS\" in the Zoneminder web console, or set the FPS key in the aidect zone."))?;
+    info!("{}: Setting maximum fps to {}", monitor_id, max_fps);
 
     let trigger_id = zone_config.trigger.unwrap_or(monitor_id);
+    info!("{}: Connecting to trigger monitor {}", monitor_id, trigger_id);
     let trigger_monitor = zoneminder::Monitor::connect(zm_conf, trigger_id)?;
 
     let yolo = ml::YoloV4Tiny::new(
